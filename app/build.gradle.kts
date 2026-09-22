@@ -1,0 +1,152 @@
+import org.gradle.api.tasks.compile.JavaCompile
+
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+android {
+    namespace = "com.ubuntuterm"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.ubuntuterm"
+        minSdk = 28
+        targetSdk = 34
+        versionCode = 1
+        versionName = "0.1.0"
+
+        // Only arm64-v8a for the first release (99% of modern devices)
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+
+        // External native build flags
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
+                arguments += listOf("-DANDROID_STL=c++_shared")
+            }
+        }
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        vectorDrawables { useSupportLibrary = true }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+        debug {
+            isMinifyEnabled = false
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+        freeCompilerArgs += listOf(
+            "-opt-in=kotlin.RequiresOptIn",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
+            "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi"
+        )
+    }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
+        prefab = true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    packaging {
+        resources {
+            excludes += setOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                "/META-INF/DEPENDENCIES",
+                "/META-INF/LICENSE*",
+                "/META-INF/NOTICE*"
+            )
+        }
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
+}
+
+dependencies {
+    // === AndroidX core ===
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
+    implementation("androidx.activity:activity-compose:1.9.2")
+    implementation("androidx.navigation:navigation-compose:2.8.1")
+
+    // === Compose BOM + Material 3 ===
+    implementation(platform("androidx.compose:compose-bom:2024.09.02"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // === Coroutines ===
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    // === Termux libraries ===
+    //
+    // Per project spec (separation principle, section "Sobre Termux"):
+    // Termux is NOT a dependency of this application.
+    //
+    // The earlier draft declared `com.github.termux:termux-app:...` as a
+    // fallback for the VT100 parser. That declaration has been REMOVED
+    // because:
+    //   1. The actual code in `ui/terminal/TerminalBuffer.kt` +
+    //      `ui/terminal/AnsiParser.kt` is a self-contained VT100
+    //      implementation that does NOT import any Termux class.
+    //   2. Per the spec, Termux as a dependency (runtime, library, or
+    //      otherwise) is forbidden.
+    //
+    // No substitution is required because no code references Termux types.
+
+    // === DataStore for persistent settings ===
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    // === Networking (for rootfs download only) ===
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // === Tar extraction (Apache Commons Compress) ===
+    // Used to extract the Ubuntu rootfs tarball. This is a JAR dependency
+    // for I/O only — it does NOT replace any Ubuntu component.
+    implementation("org.apache.commons:commons-compress:1.27.1")
+
+    // === Testing ===
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2024.09.02"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+}
