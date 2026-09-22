@@ -46,15 +46,27 @@ class BootstrapManager(private val context: Context) {
         data class Failed(val reason: String, val cause: Throwable? = null) : Result()
     }
 
-    /** URL of the Ubuntu Base 24.04 rootfs (arm64). */
+    /** URL of the Ubuntu Base 24.04.5 rootfs (arm64). */
     // The "ubuntu-base" image is the minimal official rootfs used by
     // LXC/UTS/etc — not a custom tarball we generated.
+    // 24.04.5 is the latest published point release as of 2026-09.
+    // Source: https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/
     private val rootfsUrl: String =
         "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/" +
-            "ubuntu-base-24.04.1-base-arm64.tar.gz"
+            "ubuntu-base-24.04.5-base-arm64.tar.gz"
 
-    /** Expected SHA256 of the tarball (filled in after first run). */
-    private val expectedSha256: String? = null  // null = skip verification (TODO)
+    /**
+     * Expected SHA256 of the tarball, fetched from the official
+     * SHA256SUMS file published alongside the rootfs.
+     *
+     * Source:
+     *   https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/SHA256SUMS
+     *
+     * If the checksum verification fails, the bootstrap is aborted and
+     * the partial tarball is deleted — never silently continue.
+     */
+    private val expectedSha256: String =
+        "a91d5a93010193712d346d761372b7c9db6dfcf093893161c64ca107f05914f2"
 
     private val httpClient by lazy {
         OkHttpClient.Builder()

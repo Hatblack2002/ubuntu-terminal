@@ -14,13 +14,16 @@ android {
         applicationId = "com.ubuntuterm"
         minSdk = 28
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.1.2"
 
         // Only arm64-v8a for the first release (99% of modern devices)
         ndk {
             abiFilters += "arm64-v8a"
         }
+
+        // Pin NDK version to the one we have installed locally.
+        ndkVersion = "26.3.11579264"
 
         // External native build flags
         externalNativeBuild {
