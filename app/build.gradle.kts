@@ -116,21 +116,12 @@ dependencies {
     // === Coroutines ===
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
-    // === Termux libraries ===
+    // === Terminal renderer ===
     //
-    // Per project spec (separation principle, section "Sobre Termux"):
-    // Termux is NOT a dependency of this application.
-    //
-    // The earlier draft declared `com.github.termux:termux-app:...` as a
-    // fallback for the VT100 parser. That declaration has been REMOVED
-    // because:
-    //   1. The actual code in `ui/terminal/TerminalBuffer.kt` +
-    //      `ui/terminal/AnsiParser.kt` is a self-contained VT100
-    //      implementation that does NOT import any Termux class.
-    //   2. Per the spec, Termux as a dependency (runtime, library, or
-    //      otherwise) is forbidden.
-    //
-    // No substitution is required because no code references Termux types.
+    // Per separation principle: NO Termux. The terminal renderer and
+    // VT100 parser are implemented from scratch in
+    // `ui/terminal/TerminalBuffer.kt` + `ui/terminal/AnsiParser.kt`.
+    // No Termux class, library, or asset is referenced anywhere.
 
     // === DataStore for persistent settings ===
     implementation("androidx.datastore:datastore-preferences:1.1.1")

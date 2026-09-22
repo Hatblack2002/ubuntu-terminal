@@ -319,7 +319,7 @@ ubuntu-terminal/
 | Sin shell propio | ✅ Se usa `/bin/bash` de Ubuntu |
 | Sin filesystem inventado | ✅ Se usa el rootfs real de Ubuntu |
 | Sin REST/HTTP local | ✅ Solo PTY + fork + execve |
-| Sin Termux como app | ✅ Se reutilizan librerías JAR, no la app |
+| Sin Termux | ✅ Sin dependencia, sin URL, sin librería, sin referencia |
 | Sin root como requisito | ✅ PRoot funciona sin root |
 | Diseño visual propio | ✅ Compose + Canvas personalizado |
 | PTY real | ✅ openpty + ioctl(TIOCSWINSZ) |

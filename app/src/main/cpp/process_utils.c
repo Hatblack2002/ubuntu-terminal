@@ -8,10 +8,9 @@
  * between the Android UI and the Ubuntu process uses native IPC
  * primitives only: PTY, pipes, and process signals.
  *
- * Per project spec (section 13): Termux as an app is NOT required.
- * We re-use the open-source Termux libraries (termux-terminal-emulator
- * + termux-terminal-view) which are independent JARs, but the actual
- * process spawning is done here with native fork()/execve().
+ * Per separation principle: NO Termux. The child process is spawned
+ * with the standard POSIX primitives fork()/execve(); no Termux
+ * component is used at any layer.
  */
 
 #include "process_utils.h"

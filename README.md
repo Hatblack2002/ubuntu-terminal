@@ -180,21 +180,17 @@ PRoot es un translator de syscalls basado en `ptrace()` que **no requiere
 root** — intercepta las llamadas al sistema del proceso hijo y reescribe
 las rutas absolutas para que apunten dentro de nuestro rootfs.
 
-PRoot es el mismo mecanismo que usa Termux internamente, y es el estándar
-de facto para ejecutar Linux userspace real sin root en Android.
+PRoot es el estándar de facto para ejecutar Linux userspace real sin
+root en Android.
 
-### ¿Por qué reutilizar `com.termux:termux-terminal-emulator`?
+### ¿Por qué un parser VT100 propio?
 
-La especificación (sección 13) dice explícitamente: *"Termux como aplicación
-NO debe ser una dependencia"*. La reutilización de **bibliotecas** open-source
-de Termux está permitida y es de hecho recomendable (sección 4: *"investigar
-si existe una implementación madura"*).
-
-`termux-terminal-emulator` es una librería JAR independiente (no requiere
-la app Termux instalada) que expone un emulador VT100 mucho más completo
-que el `AnsiParser.kt` minimalista incluido aquí. La usamos como fallback
-de alto rendimiento; si en el futuro se quiere un control total del parser,
-se puede eliminar y usar solo nuestra implementación.
+La aplicación NO depende de ninguna librería externa para interpretar
+ANSI. `TerminalBuffer.kt` + `AnsiParser.kt` son una implementación
+propia que cubre los casos comunes (cursor, colores, scrollback,
+modos SGR, OSC). Esto forma parte de la **interfaz** — el emulador
+de terminal es UI, no es Ubuntu. La interpretación de comandos la
+sigue haciendo `/bin/bash` real dentro de Ubuntu.
 
 ### ¿Por qué Jetpack Compose + Canvas propio?
 
@@ -271,7 +267,7 @@ cd scripts/
 
 - [ ] Bundled rootfs como asset alternativo (sin descarga inicial)
 - [ ] Soporte para x86_64 (emuladores)
-- [ ] Parser VT100 completo (vía `termux-terminal-emulator`)
+- [ ] Ampliar cobertura del parser VT100 propio (bracketed paste, mouse, alt screen)
 - [ ] Temas personalizables (dark/light/custom)
 - [ ] Explorador de archivos integrado
 - [ ] Atajos de teclado configurables

@@ -20,7 +20,12 @@ import java.io.IOException
  *     are translated to point inside our sandbox. It does NOT replace
  *     Ubuntu.
  *   - PRoot is the standard way to run a real Linux rootfs without root
- *     on Android. It is also what Termux uses internally.
+ *     on Android.
+ *
+ * Per project separation principle:
+ *   NO Termux of any kind — not as an app, not as a library, not as a
+ *   download source. PRoot is fetched exclusively from its official
+ *   upstream release on GitHub.
  *
  * We use a statically-linked arm64 PRoot binary so it has no runtime
  * dependencies on the host system.
@@ -36,13 +41,13 @@ class PRootManager {
     /**
      * Source URLs for the PRoot static binary.
      *
-     * Primary: official proot/proot GitHub releases.
-     * Fallback: Termux packages repository (also a static binary).
+     * Only official upstream sources are used. There is NO Termux
+     * fallback — per the separation principle, Termux is forbidden as
+     * an app, library, or download source.
      */
     private val sources = listOf(
-        "https://github.com/proot/proot/releases/download/v5.1.0/proot-v5.1.0-arm64-static" to "v5.1.0",
-        // Fallback: Termux's proot package (also statically compiled)
-        "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot-static_5.1.0-71_aarch64.deb" to "termux-5.1.0-71"
+        // Official PRoot GitHub release (statically-linked arm64 binary)
+        "https://github.com/proot/proot/releases/download/v5.1.0/proot-v5.1.0-arm64-static" to "v5.1.0"
     )
 
     private val httpClient by lazy {

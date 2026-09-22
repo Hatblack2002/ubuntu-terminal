@@ -195,10 +195,11 @@ proot
 ### `PRootManager`
 
 1. Comprueba si `FileLocations.prootBinary` existe y es ejecutable.
-2. Si no, intenta descargar desde:
+2. Si no, descarga desde el único source oficial:
    - GitHub: `proot/proot` releases (`proot-v5.1.0-arm64-static`).
-   - Fallback: paquete Termux `proot-static` (también estático).
 3. `chmod +x` + verificación.
+
+No existe ningún fallback a repositorios de Termux.
 
 ---
 
@@ -242,9 +243,8 @@ Todo vive bajo el storage scoped del app, lo que significa:
 
 ## Optimizaciones futuras
 
-1. **Reemplazar el AnsiParser minimalista** por el emulador VT100
-   completo de `com.termux:termux-terminal-emulator` cuando esté
-   disponible vía JitPack.
+1. **Ampliar el AnsiParser propio** para cubrir más secuencias VT100
+   (bracketed paste, mouse reports, alt screen, DECSET/DECSET).
 2. **Bundled rootfs** como alternativa para instalaciones offline.
 3. **Compresión de scrollback** con run-length encoding para reducir
    memoria en sesiones largas.
