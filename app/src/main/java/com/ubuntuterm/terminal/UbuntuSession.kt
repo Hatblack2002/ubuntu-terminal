@@ -71,27 +71,73 @@ class UbuntuSession(
             Log.w(TAG, "Session $id already started")
             return
         }
+        if (closed.get()) {
+            Log.w(TAG, "Session $id already closed")
+            return
+        }
         _state.value = SessionState.Starting
 
-        val argv = PRootRunner.buildArgv(config).toTypedArray()
-        val envp = PRootRunner.buildEnvp(config).toTypedArray()
-        val cwd = FileLocations.rootDir.absolutePath
+        // CRITICAL FIX (v0.1.3):
+        //   `nativeSpawn()` calls `fork()` from the JNI layer. Calling `fork()`
+        //   from Android's Main thread (where this function used to run when
+        //   invoked from Compose) can cause ART to deadlock the GC or to
+        //   SIGABRT the whole process — which matches the symptom of the app
+        //   "closing unexpectedly right after the bootstrap finishes".
+        //
+        //   We now run ALL of:
+        //     - PRootRunner.buildArgv()      (may throw IllegalArgumentException)
+        //     - PRootRunner.buildEnvp()
+        //     - NativeTerminal.nativeSpawn()  (does the actual fork)
+        //   on Dispatchers.IO, AND we wrap them inside the SAME try/catch.
+        //   Previously buildArgv()/buildEnvp() were OUTSIDE the try/catch, so
+        //   if `require(proot.exists() && proot.canExecute())` failed, the
+        //   IllegalArgumentException propagated up to the Activity and crashed
+        //   the process with FATAL EXCEPTION. Now it is caught and reported
+        //   gracefully as SessionState.Failed.
+        //
+        //   The JNI/PTY architecture is NOT changed. fork() is still fork().
+        //   Only the dispatcher that calls it is different.
+        scope.launch {
+            try {
+                val cwd = FileLocations.rootDir.absolutePath
+                val argv: Array<String>
+                val envp: Array<String>
+                withContext(Dispatchers.IO) {
+                    // buildArgv() does `require(proot.exists() && proot.canExecute())`
+                    // which can throw IllegalArgumentException. We keep it
+                    // inside the try/catch so it does not crash the Activity.
+                    argv = PRootRunner.buildArgv(config).toTypedArray()
+                    envp = PRootRunner.buildEnvp(config).toTypedArray()
+                }
 
-        try {
-            handle = NativeTerminal.nativeSpawn(
-                cwd,
-                argv,
-                envp,
-                config.initialCols,
-                config.initialRows
-            )
-            Log.i(TAG, "Spawned pid for session $id (handle=$handle)")
-            _state.value = SessionState.Running
-            startReader()
-            startReaper()
-        } catch (t: Throwable) {
-            Log.e(TAG, "Failed to spawn session", t)
-            _state.value = SessionState.Failed(t.message ?: "spawn failed")
+                // nativeSpawn() does fork()+execve() internally. MUST run
+                // on Dispatchers.IO so fork() does not happen on the Main
+                // thread (where ART's JIT and GC are active).
+                val h = withContext(Dispatchers.IO) {
+                    NativeTerminal.nativeSpawn(
+                        cwd,
+                        argv,
+                        envp,
+                        config.initialCols,
+                        config.initialRows
+                    )
+                }
+
+                if (h == 0L) {
+                    // nativeSpawn returns 0 when it threw an IOException from
+                    // JNI. We treat that as a failed spawn.
+                    throw IOException("nativeSpawn returned 0 (JNI threw)")
+                }
+
+                handle = h
+                Log.i(TAG, "Spawned pid for session $id (handle=$handle)")
+                _state.value = SessionState.Running
+                startReader()
+                startReaper()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to spawn session", t)
+                _state.value = SessionState.Failed(t.message ?: "spawn failed")
+            }
         }
     }
 
