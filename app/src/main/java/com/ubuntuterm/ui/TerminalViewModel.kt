@@ -27,7 +27,7 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
     val manager get() = _manager
 
     private val bootstrap = BootstrapManager(app)
-    private val prootManager = PRootManager()
+    private val prootManager = PRootManager(app)
 
     sealed class BootstrapState {
         object Idle : BootstrapState()
@@ -55,11 +55,11 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
         }
         _bootstrapState.value = BootstrapState.Checking
         viewModelScope.launch {
-            // First fetch PRoot
+            // First extract PRoot from APK assets (no network required)
             _prootState.value = BootstrapState.Checking
             when (val r = prootManager.ensureReady()) {
                 is PRootManager.Result.AlreadyReady -> _prootState.value = BootstrapState.Ready
-                is PRootManager.Result.Downloaded -> _prootState.value = BootstrapState.Ready
+                is PRootManager.Result.Extracted -> _prootState.value = BootstrapState.Ready
                 is PRootManager.Result.Failed -> {
                     _bootstrapState.value = BootstrapState.Failed(
                         "PRoot: ${r.reason}"

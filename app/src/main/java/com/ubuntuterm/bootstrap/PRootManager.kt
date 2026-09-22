@@ -1,109 +1,128 @@
 package com.ubuntuterm.bootstrap
 
+import android.content.Context
 import android.util.Log
 import com.ubuntuterm.util.FileLocations
 import com.ubuntuterm.util.ensureExecutable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 
 /**
- * Downloads and caches the PRoot static binary.
+ * Provides the PRoot binary to the application.
  *
- * Per project spec (section 3 & 14):
- *   - PRoot is a TRANSLATOR — it intercepts syscalls from the Ubuntu
- *     binaries and rewrites paths so that "absolute" paths like /usr/bin
- *     are translated to point inside our sandbox. It does NOT replace
- *     Ubuntu.
- *   - PRoot is the standard way to run a real Linux rootfs without root
- *     on Android.
+ * === Per separation principle (NO Termux) ===
  *
- * Per project separation principle:
- *   NO Termux of any kind — not as an app, not as a library, not as a
- *   download source. PRoot is fetched exclusively from its official
- *   upstream release on GitHub.
+ * Termux is NOT used as:
+ *   - an app
+ *   - a library
+ *   - a download source
+ *   - a fallback
  *
- * We use a statically-linked arm64 PRoot binary so it has no runtime
- * dependencies on the host system.
+ * PRoot is shipped **bundled inside the APK** as a compressed asset at
+ * `app/src/main/assets/proot/`. At first launch the asset is copied to
+ * the app's private external storage and made executable. There is
+ * **NO runtime download** of PRoot.
+ *
+ * === Source of the bundled binary ===
+ *
+ * The PRoot binary in `assets/proot/proot-arm64` is the official
+ * upstream PRoot (https://github.com/proot-me/proot, GPL-2.0) compiled
+ * for Android arm64 using the build scripts published by
+ * `green-green-avk/build-proot-android` (MIT,
+ * https://github.com/green-green-avk/build-proot-android).
+ *
+ * The build scripts compile PRoot with the Android NDK and statically
+ * link libtalloc, producing a binary that depends only on bionic
+ * `libc.so` and `libdl.so` — both present on every Android device.
+ *
+ * Licenses of the bundled binary are included alongside the binary in
+ * `assets/proot/LICENSE-proot` (GPL-2.0) and
+ * `assets/proot/LICENSE-build-proot-android` (MIT).
+ *
+ * === Why this is the correct approach ===
+ *
+ * 1. No external network dependency at runtime.
+ * 2. No dependency on Termux (neither the app nor its package repo).
+ * 3. The binary is reproducibly built from public upstream sources.
+ * 4. Licenses are respected and shipped with the binary.
+ * 5. If the user wants to rebuild the binary from source, the build
+ *    scripts at green-green-avk/build-proot-android are public.
  */
-class PRootManager {
+class PRootManager(private val context: Context) {
 
     sealed class Result {
         object AlreadyReady : Result()
-        data class Downloaded(val version: String) : Result()
+        data class Extracted(val version: String) : Result()
         data class Failed(val reason: String, val cause: Throwable? = null) : Result()
     }
 
     /**
-     * Source URLs for the PRoot static binary.
+     * Extracts the PRoot binary from APK assets into the app's private
+     * external storage, making it executable.
      *
-     * Only official upstream sources are used. There is NO Termux
-     * fallback — per the separation principle, Termux is forbidden as
-     * an app, library, or download source.
+     * Idempotent: if the binary already exists and is executable,
+     * returns AlreadyReady without re-extracting.
      */
-    private val sources = listOf(
-        // Official PRoot GitHub release (statically-linked arm64 binary)
-        "https://github.com/proot/proot/releases/download/v5.1.0/proot-v5.1.0-arm64-static" to "v5.1.0"
-    )
-
-    private val httpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
-            .followRedirects(true)
-            .build()
-    }
-
     suspend fun ensureReady(): Result = withContext(Dispatchers.IO) {
         val bin = FileLocations.prootBinary
-        if (bin.exists() && bin.canExecute()) {
+        if (bin.exists() && bin.canExecute() && bin.length() > 0) {
             return@withContext Result.AlreadyReady
         }
-        FileLocations.prootDir.mkdirs()
-        bin.parentFile?.mkdirs()
 
-        var lastErr: Throwable? = null
-        for ((url, version) in sources) {
-            try {
-                downloadTo(url, bin, version)
-                return@withContext Result.Downloaded(version)
-            } catch (t: Throwable) {
-                Log.w(TAG, "Failed to fetch PRoot from $url: ${t.message}")
-                lastErr = t
-                if (bin.exists()) bin.delete()
+        try {
+            FileLocations.prootDir.mkdirs()
+            bin.parentFile?.mkdirs()
+
+            // Extract proot binary itself.
+            copyAsset("proot/proot-arm64", bin)
+            if (!ensureExecutable(bin)) {
+                throw IOException("Failed to chmod +x ${bin.absolutePath}")
             }
+
+            // Extract the loader that PRoot uses to bootstrap the child
+            // process. PRoot expects the loader at a fixed relative path:
+            //   <proot_binary_dir>/../libexec/proot/loader
+            val libexecDir = File(FileLocations.prootDir, "libexec/proot").apply { mkdirs() }
+            val loader = File(libexecDir, "loader")
+            copyAsset("proot/loader-arm64", loader)
+            if (!ensureExecutable(loader)) {
+                throw IOException("Failed to chmod +x loader")
+            }
+
+            // The 32-bit loader is only needed if we ever run 32-bit
+            // binaries inside Ubuntu. For an arm64-only setup, copy it
+            // anyway for completeness.
+            val loader32 = File(libexecDir, "loader32")
+            copyAsset("proot/loader32-arm", loader32)
+            ensureExecutable(loader32)
+
+            Log.i(TAG, "PRoot extracted to ${bin.absolutePath} (${bin.length()} bytes)")
+            Log.i(TAG, "Loader extracted to ${loader.absolutePath} (${loader.length()} bytes)")
+
+            Result.Extracted("v5.1.0-android-aarch64")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to extract PRoot from assets", t)
+            // Clean up partial state
+            if (bin.exists()) bin.delete()
+            Result.Failed(
+                "Could not extract bundled PRoot binary from APK assets: ${t.message}",
+                t
+            )
         }
-        return@withContext Result.Failed(
-            "All PRoot sources failed: ${lastErr?.message}",
-            lastErr
-        )
     }
 
-    private fun downloadTo(url: String, target: File, version: String) {
-        Log.i(TAG, "Downloading PRoot $version from $url")
-        val req = Request.Builder().url(url).build()
-        httpClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                throw IOException("HTTP ${resp.code} for $url")
-            }
-            val body = resp.body ?: throw IOException("empty body")
-            body.byteStream().use { input ->
-                FileOutputStream(target).use { out ->
-                    input.copyTo(out)
-                }
+    /**
+     * Copies a single asset to a destination file.
+     */
+    private fun copyAsset(assetPath: String, dest: File) {
+        context.assets.open(assetPath).use { input ->
+            FileOutputStream(dest).use { out ->
+                input.copyTo(out)
             }
         }
-        if (!target.setExecutable(true, true)) {
-            throw IOException("Failed to chmod +x ${target.absolutePath}")
-        }
-        if (!ensureExecutable(target)) {
-            throw IOException("PRoot binary is not executable after chmod")
-        }
-        Log.i(TAG, "PRoot installed at ${target.absolutePath} (${target.length()} bytes)")
     }
 
     companion object {
