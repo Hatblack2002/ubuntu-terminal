@@ -1,5 +1,6 @@
 package com.ubuntuterm.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -29,7 +30,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.ubuntuterm.terminal.UbuntuSession
 import com.ubuntuterm.ui.terminal.TerminalView
 
 /**
@@ -46,7 +49,13 @@ import com.ubuntuterm.ui.terminal.TerminalView
 fun TerminalWorkspace(vm: TerminalViewModel) {
     val sessions by vm.manager.sessions.collectAsState()
     val activeId by vm.manager.activeSessionId.collectAsState()
+    val sessionError by vm.lastSessionError.collectAsState()
     var selectedTab by remember { mutableIntStateOf(0) }
+
+    // Track session state changes so we can render Starting/Failed/Closed states.
+    val activeSessionState = remember(sessions, activeId) {
+        sessions.find { it.id == activeId }?.state?.value
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Toolbar
@@ -78,11 +87,45 @@ fun TerminalWorkspace(vm: TerminalViewModel) {
             }
         }
 
+        // Session error banner (from VM)
+        if (sessionError != null) {
+            Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = sessionError ?: "",
+                        modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    IconButton(
+                        onClick = { vm.clearSessionError() },
+                        modifier = Modifier
+                            .width(24.dp)
+                            .height(24.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Dismiss error",
+                            tint = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+            }
+        }
+
         // Tabs
         if (sessions.isNotEmpty()) {
             val activeIndex = sessions.indexOfFirst { it.id == activeId }.coerceAtLeast(0)
+            // Keep selectedTab in sync when sessions change.
+            if (selectedTab >= sessions.size) selectedTab = sessions.lastIndex
             ScrollableTabRow(
-                selectedTabIndex = activeIndex,
+                selectedTabIndex = activeIndex.coerceAtMost(sessions.lastIndex),
                 edgePadding = 0.dp
             ) {
                 sessions.forEachIndexed { index, session ->
@@ -117,24 +160,102 @@ fun TerminalWorkspace(vm: TerminalViewModel) {
             }
         }
 
-        // Active terminal
+        // Active terminal — show state-aware UI
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 0.dp)
+                .padding(top = 0.dp),
+            contentAlignment = Alignment.Center
         ) {
             val session = sessions.getOrNull(selectedTab)
                 ?: sessions.find { it.id == activeId }
             if (session != null) {
-                TerminalView(session = session)
+                // IMPORTANT: subscribe to the session's state so we recompose
+                // when it transitions Starting → Running → Exited/Failed.
+                val state by session.state.collectAsState()
+                when (state) {
+                    is UbuntuSession.SessionState.Starting -> {
+                        Text(
+                            text = "Starting session…\n" +
+                                "(spawn PRoot + Ubuntu /bin/bash via PTY)",
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    is UbuntuSession.SessionState.Running -> {
+                        TerminalView(session = session)
+                    }
+                    is UbuntuSession.SessionState.Failed -> {
+                        val reason = (state as UbuntuSession.SessionState.Failed).reason
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Session failed",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                text = reason,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                text = "(if this is 'PRoot binary not ready' or " +
+                                    "'nativeSpawn returned 0', check logcat for " +
+                                    "terminal_jni/process_utils)",
+                                textAlign = TextAlign.Center,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    is UbuntuSession.SessionState.Exited -> {
+                        val code = (state as UbuntuSession.SessionState.Exited).code
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Session exited with code $code",
+                                color = if (code == 0)
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                else MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                text = "(non-zero usually means /bin/bash or PRoot " +
+                                    "could not start — see logcat for tag " +
+                                    "'terminal_jni' / 'PTY_READER' / 'PTY_REAPER')",
+                                textAlign = TextAlign.Center,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    UbuntuSession.SessionState.Closed -> {
+                        Text(
+                            text = "Session closed.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    UbuntuSession.SessionState.Idle -> {
+                        Text(
+                            text = "Session idle.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             } else {
                 Text(
                     text = "No sessions. Tap + to open one.",
                     modifier = Modifier
                         .padding(16.dp)
-                        .wrapContentWidth()
+                        .wrapContentWidth(),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
     }
 }
+

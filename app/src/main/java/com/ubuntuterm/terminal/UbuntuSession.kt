@@ -76,6 +76,7 @@ class UbuntuSession(
             return
         }
         _state.value = SessionState.Starting
+        Log.i("SESSION_START", "start() invoked for session $id")
 
         // CRITICAL FIX (v0.1.3):
         //   `nativeSpawn()` calls `fork()` from the JNI layer. Calling `fork()`
@@ -89,30 +90,29 @@ class UbuntuSession(
         //     - PRootRunner.buildEnvp()
         //     - NativeTerminal.nativeSpawn()  (does the actual fork)
         //   on Dispatchers.IO, AND we wrap them inside the SAME try/catch.
-        //   Previously buildArgv()/buildEnvp() were OUTSIDE the try/catch, so
-        //   if `require(proot.exists() && proot.canExecute())` failed, the
-        //   IllegalArgumentException propagated up to the Activity and crashed
-        //   the process with FATAL EXCEPTION. Now it is caught and reported
-        //   gracefully as SessionState.Failed.
         //
         //   The JNI/PTY architecture is NOT changed. fork() is still fork().
         //   Only the dispatcher that calls it is different.
         scope.launch {
             try {
                 val cwd = FileLocations.rootDir.absolutePath
+                Log.i("SESSION_START", "  cwd=$cwd")
+
                 val argv: Array<String>
                 val envp: Array<String>
                 withContext(Dispatchers.IO) {
+                    Log.i("SESSION_START", "  building argv/envp on Dispatchers.IO")
                     // buildArgv() does `require(proot.exists() && proot.canExecute())`
                     // which can throw IllegalArgumentException. We keep it
                     // inside the try/catch so it does not crash the Activity.
                     argv = PRootRunner.buildArgv(config).toTypedArray()
                     envp = PRootRunner.buildEnvp(config).toTypedArray()
+                    Log.i("PRoot_ARGS_READY",
+                        "  argv[0]=${argv.firstOrNull()} argv.size=${argv.size} envp.size=${envp.size}")
                 }
 
-                // nativeSpawn() does fork()+execve() internally. MUST run
-                // on Dispatchers.IO so fork() does not happen on the Main
-                // thread (where ART's JIT and GC are active).
+                Log.i("NATIVE_SPAWN_START",
+                    "  calling NativeTerminal.nativeSpawn() on Dispatchers.IO")
                 val h = withContext(Dispatchers.IO) {
                     NativeTerminal.nativeSpawn(
                         cwd,
@@ -122,20 +122,28 @@ class UbuntuSession(
                         config.initialRows
                     )
                 }
+                Log.i("NATIVE_SPAWN_RETURN", "  nativeSpawn returned handle=$h")
 
                 if (h == 0L) {
                     // nativeSpawn returns 0 when it threw an IOException from
                     // JNI. We treat that as a failed spawn.
-                    throw IOException("nativeSpawn returned 0 (JNI threw)")
+                    throw IOException("nativeSpawn returned 0 (JNI threw IOException)")
                 }
 
                 handle = h
                 Log.i(TAG, "Spawned pid for session $id (handle=$handle)")
                 _state.value = SessionState.Running
+
+                Log.i("PTY_READER_START", "  starting reader for session $id")
                 startReader()
+                Log.i("PTY_REAPER_START", "  starting reaper for session $id")
                 startReaper()
+                Log.i("SESSION_RUNNING",
+                    "  session $id is Running; reader+reaper launched")
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to spawn session", t)
+                Log.e("SESSION_FAILED",
+                    "  session $id failed: ${t.javaClass.simpleName}: ${t.message}")
                 _state.value = SessionState.Failed(t.message ?: "spawn failed")
             }
         }
@@ -144,9 +152,16 @@ class UbuntuSession(
     private fun startReader() {
         readerJob = scope.launch {
             val buf = ByteArray(READ_BUF)
+            Log.i("PTY_READER", "  reader coroutine started for session $id")
             while (isActive && !closed.get()) {
-                val n = withContext(Dispatchers.IO) {
-                    NativeTerminal.nativeRead(handle, buf, 0, buf.size)
+                val n = try {
+                    withContext(Dispatchers.IO) {
+                        NativeTerminal.nativeRead(handle, buf, 0, buf.size)
+                    }
+                } catch (t: Throwable) {
+                    Log.e("PTY_READER",
+                        "  nativeRead threw: ${t.javaClass.simpleName}: ${t.message}")
+                    break
                 }
                 when {
                     n > 0 -> {
@@ -154,8 +169,7 @@ class UbuntuSession(
                         _output.emit(copy)
                     }
                     n == -2 -> {
-                        // EOF — child closed the PTY
-                        Log.i(TAG, "Session $id: EOF from PTY")
+                        Log.i("PTY_READER", "  session $id: EOF from PTY (n=-2)")
                         break
                     }
                     n == 0 -> {
@@ -164,20 +178,29 @@ class UbuntuSession(
                     }
                     else -> {
                         // Error
-                        Log.e(TAG, "Session $id: read returned $n (errno)")
+                        Log.e("PTY_READER", "  session $id: read returned $n (errno)")
                         kotlinx.coroutines.delay(50)
                     }
                 }
             }
+            Log.i("PTY_READER", "  reader coroutine exited for session $id")
         }
     }
 
     private fun startReaper() {
         scope.launch {
+            Log.i("PTY_REAPER", "  reaper coroutine started for session $id")
             while (isActive && !closed.get()) {
-                val code = NativeTerminal.nativeWaitExit(handle, false)
+                val code = try {
+                    NativeTerminal.nativeWaitExit(handle, false)
+                } catch (t: Throwable) {
+                    Log.e("PTY_REAPER",
+                        "  nativeWaitExit threw: ${t.javaClass.simpleName}: ${t.message}")
+                    -1
+                }
                 if (code != -2) {
                     Log.i(TAG, "Session $id exited with code $code")
+                    Log.i("PTY_REAPER", "  session $id reaped, exitCode=$code")
                     _exitCode.value = code
                     _state.value = SessionState.Exited(code)
                     close()
@@ -185,6 +208,7 @@ class UbuntuSession(
                 }
                 kotlinx.coroutines.delay(250)
             }
+            Log.i("PTY_REAPER", "  reaper coroutine exited for session $id")
         }
     }
 

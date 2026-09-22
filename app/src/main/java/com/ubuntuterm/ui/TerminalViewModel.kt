@@ -1,6 +1,7 @@
 package com.ubuntuterm.ui
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ubuntuterm.terminal.TerminalService
@@ -45,6 +46,17 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
     private val _prootState = MutableStateFlow<BootstrapState>(BootstrapState.Idle)
     val prootState: StateFlow<BootstrapState> = _prootState.asStateFlow()
 
+    /**
+     * Last session-creation error, if any. Surfaced to the UI so the user
+     * sees a real error message instead of the app silently dying.
+     */
+    private val _lastSessionError = MutableStateFlow<String?>(null)
+    val lastSessionError: StateFlow<String?> = _lastSessionError.asStateFlow()
+
+    fun clearSessionError() {
+        _lastSessionError.value = null
+    }
+
     fun ensureBootstrap() {
         if (_bootstrapState.value is BootstrapState.Ready ||
             _bootstrapState.value is BootstrapState.Checking ||
@@ -87,23 +99,85 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun openSession(title: String = "ubuntu"): UbuntuSession {
-        val session = _manager.openSession(title)
-        // Keep the session alive in the background
-        TerminalService.start(getApplication())
+    /**
+     * Opens a new Ubuntu session.
+     *
+     * CRITICAL FIX (v0.1.4):
+     *   Previously `TerminalService.start(getApplication())` was called
+     *   directly from here. That does `context.startForegroundService()`
+     *   which on Android 12+ can throw
+     *   `ForegroundServiceStartNotAllowedException` if the app is in a
+     *   background-restricted state. That exception was NOT caught and
+     *   crashed the Activity when the user tapped "+".
+     *
+     *   Now we:
+     *     1. Log every stage (PLUS_CLICK → SESSION_CREATE_START → ...).
+     *     2. Wrap TerminalService.start() in try/catch. If it fails, we
+     *        continue anyway — the session can still run without the
+     *        foreground service, it just won't survive backgrounding.
+     *     3. Wrap _manager.openSession() in try/catch too. If PRoot is
+     *        not executable or nativeSpawn throws, we capture the error
+     *        and surface it via `lastSessionError` instead of crashing.
+     *     4. Return the session (or null on failure) so the caller can
+     *        react.
+     */
+    fun openSession(title: String = "ubuntu"): UbuntuSession? {
+        android.util.Log.i("PLUS_CLICK", "openSession() invoked, title=$title")
+        _lastSessionError.value = null
+
+        // Stage: SESSION_CREATE_START
+        android.util.Log.i("SESSION_CREATE_START", "calling _manager.openSession()")
+        val session = try {
+            _manager.openSession(title)
+        } catch (t: Throwable) {
+            android.util.Log.e("SESSION_CREATE_FAILED",
+                "_manager.openSession threw: ${t.javaClass.simpleName}: ${t.message}", t)
+            _lastSessionError.value =
+                "Session create failed: ${t.javaClass.simpleName}: ${t.message}"
+            return null
+        }
+        android.util.Log.i("SESSION_REGISTERED",
+            "session created id=${session.id} state=${session.state.value}")
+
+        // Stage: foreground service — best-effort, NOT fatal
+        android.util.Log.i("FG_SERVICE_START", "calling TerminalService.start()")
+        try {
+            TerminalService.start(getApplication())
+            android.util.Log.i("FG_SERVICE_STARTED", "TerminalService started OK")
+        } catch (t: Throwable) {
+            // ForegroundServiceStartNotAllowedException, SecurityException,
+            // IllegalStateException, etc. We log and continue — the session
+            // can run without the foreground service, it just won't survive
+            // backgrounding.
+            android.util.Log.w("FG_SERVICE_FAILED",
+                "TerminalService.start threw: ${t.javaClass.simpleName}: ${t.message}")
+            // Do NOT set lastSessionError here — the session itself is OK.
+        }
+
         return session
     }
 
     fun closeSession(id: String) {
         _manager.closeSession(id)
         if (_manager.sessions.value.isEmpty()) {
-            TerminalService.stop(getApplication())
+            try {
+                TerminalService.stop(getApplication())
+            } catch (t: Throwable) {
+                android.util.Log.w("FG_SERVICE_STOP_FAILED",
+                    "TerminalService.stop threw: ${t.javaClass.simpleName}: ${t.message}")
+            }
         }
     }
 
     override fun onCleared() {
         _manager.closeAll()
-        TerminalService.stop(getApplication())
+        try {
+            TerminalService.stop(getApplication())
+        } catch (t: Throwable) {
+            android.util.Log.w("FG_SERVICE_STOP_FAILED",
+                "onCleared: TerminalService.stop threw: ${t.javaClass.simpleName}: ${t.message}")
+        }
         super.onCleared()
     }
 }
+
