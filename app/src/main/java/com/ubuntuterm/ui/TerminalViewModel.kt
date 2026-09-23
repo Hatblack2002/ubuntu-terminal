@@ -129,9 +129,28 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
         DiagnosticLog.session("SESSION_CREATE_START", "calling _manager.openSession(title=$title)")
         _lastSessionError.value = null
 
-        // Stage: SESSION_CREATE_START
+        // v0.1.12: Close any existing sessions before opening a new one.
+        // This prevents fd leaks and ensures only 1 session is alive at a time.
+        val existingSessions = _manager.sessions.value.toList()
+        if (existingSessions.isNotEmpty()) {
+            DiagnosticLog.session("SESSION_RESET",
+                "closing ${existingSessions.size} existing session(s) before opening new one")
+            for (s in existingSessions) {
+                try {
+                    s.kill(force = true)
+                    s.close()
+                } catch (t: Throwable) {
+                    DiagnosticLog.error("SESSION_RESET",
+                        "error closing session ${s.id}: ${t.message}", t)
+                }
+            }
+            _manager.closeAll()
+        }
+
+        // v0.1.12: Use unique title to avoid Compose key collision.
+        val uniqueTitle = "ubuntu-${System.nanoTime()}"
         val session = try {
-            _manager.openSession(title)
+            _manager.openSession(uniqueTitle)
         } catch (t: Throwable) {
             android.util.Log.e("SESSION_CREATE_FAILED",
                 "_manager.openSession threw: ${t.javaClass.simpleName}: ${t.message}", t)
