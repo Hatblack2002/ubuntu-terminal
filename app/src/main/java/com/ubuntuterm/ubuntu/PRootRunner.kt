@@ -85,9 +85,12 @@ object PRootRunner {
         // proot-distro includes this bind in every working setup.
         argv += "--bind=/dev/null:/proc/sys/kernel/cap_last_cap"
 
-        // Expose the app's external storage as /sdcard so the user can
-        // move files between Android and Ubuntu.
-        argv += "--bind=${FileLocations.rootDir.parentFile?.parentFile?.absolutePath ?: "/sdcard"}:/sdcard"
+        // v0.1.10: Bind a dedicated sdcard directory inside the app's internal
+        // storage. Previously this exposed ALL of /data/user/0/ which was
+        // dangerous — the user could delete the rootfs or PRoot from /sdcard.
+        // Now we create a dedicated shared folder.
+        val sdcardDir = java.io.File(FileLocations.rootDir, "sdcard").apply { mkdirs() }
+        argv += "--bind=${sdcardDir.absolutePath}:/sdcard"
 
         // User-defined binds
         for ((src, dst) in config.extraBinds) {

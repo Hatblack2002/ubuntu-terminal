@@ -214,17 +214,33 @@ class BootstrapManager(private val context: Context) {
                         }
                     }
                     entry.isLink() -> {
-                        // v0.1.8: Create real hardlinks using Os.link()
+                        // v0.1.10: Create hardlinks, fallback to symlink on EACCES/EPERM.
+                        // Android SELinux rejects link(2) with EACCES even on ext4.
+                        // PRoot already uses --link2symlink, so symlink fallback is coherent.
                         val target = File(FileLocations.ubuntuRootDir, entry.linkName)
                         out.parentFile?.mkdirs()
                         if (out.exists()) out.delete()
                         try {
                             android.system.Os.link(target.absolutePath, out.absolutePath)
                             hardlinkCount++
+                        } catch (e: android.system.ErrnoException) {
+                            // Fallback: create a symlink (same semantics as --link2symlink)
+                            DiagnosticLog.bootstrap("BootstrapManager",
+                                "hardlink EACCES, falling back to symlink: $name -> ${entry.linkName}")
+                            try {
+                                android.system.Os.symlink(entry.linkName, out.absolutePath)
+                                symlinkCount++
+                            } catch (e2: Exception) {
+                                DiagnosticLog.error("BootstrapManager",
+                                    "symlink fallback also failed: $name: ${e2.message}", e2)
+                                // Last resort: copy the file
+                                if (target.exists()) {
+                                    target.copyTo(out, overwrite = true)
+                                }
+                            }
                         } catch (e: Exception) {
                             DiagnosticLog.error("BootstrapManager",
                                 "hardlink failed: $name -> ${entry.linkName}: ${e.message}", e)
-                            // Fallback: copy the file
                             if (target.exists()) {
                                 target.copyTo(out, overwrite = true)
                             }
