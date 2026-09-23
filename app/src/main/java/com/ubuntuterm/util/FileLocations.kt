@@ -7,51 +7,43 @@ import java.io.File
  * Centralised layout of all on-device filesystem locations used by
  * the application.
  *
- * v0.1.7 FIX: PRoot binary now lives in INTERNAL storage (context.filesDir)
- * because scoped storage (getExternalFilesDir) on Android 10+ does NOT
- * support Unix executable permissions. File.setExecutable() silently
- * fails on FUSE/sdcardfs, causing canExecute() to return false.
+ * v0.1.9 FIX: ubuntuRootDir moved to INTERNAL storage (context.filesDir)
+ * because external storage (FUSE/sdcardfs) on Android 10+ CANNOT create
+ * symlinks (EPERM), hardlinks, or set Unix permissions. This broke the
+ * Ubuntu rootfs extraction — /bin was a regular file instead of a symlink
+ * to usr/bin, so /bin/bash was unreachable and bash could not start.
  *
- * Layout:
+ * ALL app data now lives in internal storage:
  *
- *   /data/data/com.ubuntuterm.debug/files/     ← INTERNAL (executable works)
- *     └── proot/                                ← PRoot binary + loader
+ *   /data/data/com.ubuntuterm.debug/files/     ← INTERNAL (ext4/f2fs)
+ *     ├── proot/          ← PRoot binary + loader (executable works)
+ *     ├── ubuntu/         ← Ubuntu rootfs (symlinks/hardlinks work)
+ *     └── cache/          ← tarball downloads
  *
- *   /sdcard/Android/data/com.ubuntuterm.debug/files/  ← EXTERNAL (large files)
- *     ├── ubuntu/        ← extracted Ubuntu rootfs (persists across sessions)
- *     ├── sessions/      ← per-session state
- *     └── cache/         ← volatile: rootfs tarball, downloads
- *
- * Per project spec (section 11): the filesystem MUST persist between
- * sessions — so we never wipe `ubuntu/` after the first bootstrap.
+ * External storage is NOT used — it's FUSE and breaks everything.
  */
 object FileLocations {
 
-    lateinit var rootDir: File        private set   // external .../files/
-    lateinit var ubuntuRootDir: File  private set   // external .../files/ubuntu/
-    lateinit var prootDir: File       private set   // INTERNAL .../files/proot/
-    lateinit var sessionsDir: File    private set   // external .../files/sessions/
-    lateinit var cacheDir: File       private set   // external .../files/cache/
+    lateinit var rootDir: File        private set   // internal .../files/
+    lateinit var ubuntuRootDir: File  private set   // internal .../files/ubuntu/
+    lateinit var prootDir: File       private set   // internal .../files/proot/
+    lateinit var sessionsDir: File    private set   // internal .../files/sessions/
+    lateinit var cacheDir: File       private set   // internal .../files/cache/
 
     fun init(context: Context) {
-        // External storage for large files (rootfs, cache, sessions).
-        // This is /sdcard/Android/data/<pkg>/files — scoped storage on
-        // Android 10+, automatically available without SAF permissions.
-        val external = context.getExternalFilesDir(null)
-            ?: context.filesDir // fallback
-        rootDir        = external
-        ubuntuRootDir  = File(external, "ubuntu").apply { mkdirs() }
-        sessionsDir    = File(external, "sessions").apply { mkdirs() }
-        cacheDir       = File(external, "cache").apply { mkdirs() }
-
-        // v0.1.7: PRoot binary goes in INTERNAL storage where
-        // Unix permissions (including executable bit) actually work.
-        // On Android 10+, external storage is FUSE/sdcardfs which
-        // silently ignores setExecutable().
+        // v0.1.9: EVERYTHING goes in internal storage (context.filesDir).
+        // This is /data/data/<pkg>/files — a real ext4/f2fs filesystem
+        // where symlinks, hardlinks, chmod, and executable bits all work.
         //
-        // context.filesDir = /data/data/<pkg>/files (or /data/user/0/<pkg>/files)
-        // This is a real ext4 filesystem where chmod +x works.
+        // External storage (getExternalFilesDir) is FUSE/sdcardfs on
+        // Android 10+ and CANNOT create symlinks (EPERM). This broke
+        // the Ubuntu rootfs extraction — /bin was a regular file instead
+        // of a symlink to usr/bin, so /bin/bash was unreachable.
+        rootDir        = context.filesDir
+        ubuntuRootDir  = File(context.filesDir, "ubuntu").apply { mkdirs() }
         prootDir       = File(context.filesDir, "proot").apply { mkdirs() }
+        sessionsDir    = File(context.filesDir, "sessions").apply { mkdirs() }
+        cacheDir       = File(context.filesDir, "cache").apply { mkdirs() }
     }
 
     /** Where the PRoot static binary lives after first-run extraction. */
