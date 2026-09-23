@@ -306,19 +306,34 @@ class UbuntuSession(
     fun close() {
         if (!closed.compareAndSet(false, true)) return
         Log.i(TAG, "Closing session $id")
-        try {
-            if (handle != 0L) {
-                nativeBridge.close(handle)
-                handle = 0L
+        DiagnosticLog.session("SESSION_CLOSE", "closing session $id, handle=0x${handle.toString(16)}")
+
+        // v0.1.13: Kill the child process FIRST, before closing the PTY.
+        // If we close the PTY master fd first, the child gets SIGHUP but
+        // may not die immediately, leaving zombie processes and leaked fds.
+        if (handle != 0L) {
+            try {
+                nativeBridge.sendSignal(handle, 9)  // SIGKILL
+                DiagnosticLog.session("SESSION_CLOSE", "SIGKILL sent to child")
+            } catch (t: Throwable) {
+                DiagnosticLog.error("SESSION_CLOSE", "SIGKILL failed: ${t.message}", t)
             }
-        } catch (t: Throwable) {
-            Log.w(TAG, "close error: ${t.message}")
+            // Brief sleep to let the child die and the reaper reap it
+            try { Thread.sleep(100) } catch (e: InterruptedException) {}
+            try {
+                nativeBridge.close(handle)
+                DiagnosticLog.session("SESSION_CLOSE", "nativeBridge.close done")
+            } catch (t: Throwable) {
+                DiagnosticLog.error("SESSION_CLOSE", "close error: ${t.message}", t)
+            }
+            handle = 0L
         }
         readerJob?.cancel()
         scope.cancel()
         _state.value = _state.value.let {
             if (it is SessionState.Exited) it else SessionState.Closed
         }
+        DiagnosticLog.session("SESSION_CLOSE", "session $id fully closed")
     }
 
     @Immutable

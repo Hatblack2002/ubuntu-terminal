@@ -11,6 +11,7 @@ import com.ubuntuterm.terminal.TerminalManager
 import com.ubuntuterm.terminal.UbuntuSession
 import com.ubuntuterm.bootstrap.BootstrapManager
 import com.ubuntuterm.bootstrap.PRootManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -123,75 +124,65 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
      *     4. Return the session (or null on failure) so the caller can
      *        react.
      */
-    fun openSession(title: String = "ubuntu"): UbuntuSession? {
+    fun openSession(title: String = "ubuntu") {
         android.util.Log.i("PLUS_CLICK", "openSession() invoked, title=$title")
         DiagnosticLog.ui("PLUS_CLICK", "openSession() invoked, title=$title")
         DiagnosticLog.session("SESSION_CREATE_START", "calling _manager.openSession(title=$title)")
         _lastSessionError.value = null
 
-        // v0.1.12: Close any existing sessions before opening a new one.
-        // This prevents fd leaks and ensures only 1 session is alive at a time.
-        val existingSessions = _manager.sessions.value.toList()
-        if (existingSessions.isNotEmpty()) {
-            DiagnosticLog.session("SESSION_RESET",
-                "closing ${existingSessions.size} existing session(s) before opening new one")
-            for (s in existingSessions) {
-                try {
-                    s.kill(force = true)
-                    s.close()
-                } catch (t: Throwable) {
-                    DiagnosticLog.error("SESSION_RESET",
-                        "error closing session ${s.id}: ${t.message}", t)
+        // v0.1.13: Run on Dispatchers.IO because close() does Thread.sleep
+        // to let the child die. We don't want to block the Main thread.
+        viewModelScope.launch(Dispatchers.IO) {
+            // Close any existing sessions before opening a new one.
+            val existingSessions = _manager.sessions.value.toList()
+            if (existingSessions.isNotEmpty()) {
+                DiagnosticLog.session("SESSION_RESET",
+                    "closing ${existingSessions.size} existing session(s) before opening new one")
+                for (s in existingSessions) {
+                    try {
+                        s.kill(force = true)
+                        s.close()
+                    } catch (t: Throwable) {
+                        DiagnosticLog.error("SESSION_RESET",
+                            "error closing session ${s.id}: ${t.message}", t)
+                    }
                 }
+                _manager.closeAll()
             }
-            _manager.closeAll()
-        }
 
-        // v0.1.12: Use unique title to avoid Compose key collision.
-        val uniqueTitle = "ubuntu-${System.nanoTime()}"
-        val session = try {
-            _manager.openSession(uniqueTitle)
-        } catch (t: Throwable) {
-            android.util.Log.e("SESSION_CREATE_FAILED",
-                "_manager.openSession threw: ${t.javaClass.simpleName}: ${t.message}", t)
-            DiagnosticLog.error("SESSION_CREATE_FAILED",
-                "_manager.openSession threw: ${t.javaClass.simpleName}: ${t.message}", t)
+            // Use unique title to avoid Compose key collision.
+            val uniqueTitle = "ubuntu-${System.nanoTime()}"
+            val session = try {
+                _manager.openSession(uniqueTitle)
+            } catch (t: Throwable) {
+                DiagnosticLog.error("SESSION_CREATE_FAILED",
+                    "_manager.openSession threw: ${t.javaClass.simpleName}: ${t.message}", t)
+                _lastSessionError.value =
+                    "Session create failed: ${t.javaClass.simpleName}: ${t.message}"
+                return@launch
+            }
             DiagnosticReport.SessionSnapshot.sessionRequested = true
-            DiagnosticReport.SessionSnapshot.sessionCreated = false
-            _lastSessionError.value =
-                "Session create failed: ${t.javaClass.simpleName}: ${t.message}"
-            return null
-        }
-        DiagnosticReport.SessionSnapshot.sessionRequested = true
-        DiagnosticReport.SessionSnapshot.sessionCreated = true
-        DiagnosticReport.SessionSnapshot.lastSessionId = session.id
-        DiagnosticReport.SessionSnapshot.lastSessionState = session.state.value.toString()
-        DiagnosticLog.session("SESSION_REGISTERED",
-            "session created id=${session.id} state=${session.state.value}")
-        android.util.Log.i("SESSION_REGISTERED",
-            "session created id=${session.id} state=${session.state.value}")
+            DiagnosticReport.SessionSnapshot.sessionCreated = true
+            DiagnosticReport.SessionSnapshot.lastSessionId = session.id
+            DiagnosticReport.SessionSnapshot.lastSessionState = session.state.value.toString()
+            DiagnosticLog.session("SESSION_REGISTERED",
+                "session created id=${session.id} state=${session.state.value}")
 
-        // Stage: foreground service — best-effort, NOT fatal
-        DiagnosticLog.service("FG_SERVICE_START", "calling TerminalService.start()")
-        android.util.Log.i("FG_SERVICE_START", "calling TerminalService.start()")
-        DiagnosticReport.ServiceSnapshot.startRequested = true
-        try {
-            TerminalService.start(getApplication())
-            DiagnosticReport.ServiceSnapshot.startResult = "SUCCESS"
-            DiagnosticLog.service("FG_SERVICE_STARTED", "TerminalService started OK")
-            android.util.Log.i("FG_SERVICE_STARTED", "TerminalService started OK")
-        } catch (t: Throwable) {
-            DiagnosticReport.ServiceSnapshot.startResult = "FAILED"
-            DiagnosticReport.ServiceSnapshot.startException =
-                "${t.javaClass.simpleName}: ${t.message}"
-            DiagnosticLog.service("FG_SERVICE_FAILED",
-                "TerminalService.start threw: ${t.javaClass.simpleName}: ${t.message}", t)
-            android.util.Log.w("FG_SERVICE_FAILED",
-                "TerminalService.start threw: ${t.javaClass.simpleName}: ${t.message}")
-            // Do NOT set lastSessionError here — the session itself is OK.
+            // Foreground service — best-effort, NOT fatal
+            DiagnosticLog.service("FG_SERVICE_START", "calling TerminalService.start()")
+            DiagnosticReport.ServiceSnapshot.startRequested = true
+            try {
+                TerminalService.start(getApplication())
+                DiagnosticReport.ServiceSnapshot.startResult = "SUCCESS"
+                DiagnosticLog.service("FG_SERVICE_STARTED", "TerminalService started OK")
+            } catch (t: Throwable) {
+                DiagnosticReport.ServiceSnapshot.startResult = "FAILED"
+                DiagnosticReport.ServiceSnapshot.startException =
+                    "${t.javaClass.simpleName}: ${t.message}"
+                DiagnosticLog.service("FG_SERVICE_FAILED",
+                    "TerminalService.start threw: ${t.javaClass.simpleName}: ${t.message}", t)
+            }
         }
-
-        return session
     }
 
     fun closeSession(id: String) {
