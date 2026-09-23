@@ -23,8 +23,10 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <errno.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <termios.h>
 #include <android/log.h>
 
 #define TAG "process_utils"
@@ -72,12 +74,18 @@ pid_t spawn_with_pty(const char *cwd,
     if (pid == 0) {
         /* ====================== CHILD PROCESS ====================== */
 
-        /* Become session leader so the PTY becomes our controlling tty */
+        /* Become session leader so the PTY can become our controlling tty */
         setsid();
 
-        /* Reopen slave as our controlling terminal */
-        int ctl = open(slave_name, O_RDWR);
-        if (ctl >= 0) close(ctl);
+        /* v0.1.14: CRITICAL — ioctl(TIOCSCTTY) is REQUIRED.
+         * Without this, the PTY is NOT the controlling terminal.
+         * bash detects "no terminal" → disables readline → reads EOF → exits.
+         * This was the cause of "bash exits in 255ms".
+         *
+         * Order MUST be: setsid() → TIOCSCTTY → dup2.
+         * If TIOCSCTTY is before setsid(), it fails with EPERM.
+         */
+        ioctl(slave_fd, TIOCSCTTY, 0);
 
         /* Dup slave → stdin/stdout/stderr */
         dup2(slave_fd, STDIN_FILENO);

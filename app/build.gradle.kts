@@ -14,16 +14,18 @@ android {
         applicationId = "com.ubuntuterm"
         minSdk = 28
         targetSdk = 34
-        versionCode = 14
-        versionName = "0.1.13"
+        versionCode = 15
+        versionName = "0.1.14"
 
         // Only arm64-v8a for the first release (99% of modern devices)
         ndk {
             abiFilters += "arm64-v8a"
         }
 
-        // v0.1.8: ndkVersion not needed when externalNativeBuild is disabled.
-        // libterminal.so is pre-built in jniLibs/.
+        // v0.1.14: Using pre-built .so compiled with NDK directly (not via Gradle).
+        // The .so was compiled with: aarch64-linux-android28-clang++ -nostdlib
+        // It only depends on bionic libc/libdl/liblog + libandroid (all present on device).
+        // To recompile, see scripts/compile_native.sh
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -64,17 +66,8 @@ android {
         // prefab = true  // v0.1.7: disabled — we don't import native libs from AARs
     }
 
-    // v0.1.8: externalNativeBuild temporarily disabled to save disk space.
-    // libterminal.so is provided as a pre-built in src/main/jniLibs/arm64-v8a/
-    // (extracted from the v0.1.7 APK where it was compiled with NDK r26d).
-    // To re-enable native build, uncomment the block below and ensure
-    // ndkVersion matches your installed NDK.
-    // externalNativeBuild {
-    //     cmake {
-    //         path = file("src/main/cpp/CMakeLists.txt")
-    //         version = "3.22.1"
-    //     }
-    // }
+    // v0.1.14: Using pre-built .so in jniLibs/ (compiled directly with NDK).
+    // externalNativeBuild disabled to avoid Gradle CMake overhead.
 
     packaging {
         resources {
