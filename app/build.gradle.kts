@@ -14,8 +14,8 @@ android {
         applicationId = "com.ubuntuterm"
         minSdk = 28
         targetSdk = 34
-        versionCode = 7
-        versionName = "0.1.6"
+        versionCode = 8
+        versionName = "0.1.7"
 
         // Only arm64-v8a for the first release (99% of modern devices)
         ndk {
@@ -69,7 +69,7 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
-        prefab = true
+        // prefab = true  // v0.1.7: disabled — we don't import native libs from AARs
     }
 
     externalNativeBuild {

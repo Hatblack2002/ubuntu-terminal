@@ -7,13 +7,19 @@ import java.io.File
  * Centralised layout of all on-device filesystem locations used by
  * the application.
  *
- * Everything lives under the app's private external storage so it
- * survives app upgrades but can be cleared by uninstalling.
+ * v0.1.7 FIX: PRoot binary now lives in INTERNAL storage (context.filesDir)
+ * because scoped storage (getExternalFilesDir) on Android 10+ does NOT
+ * support Unix executable permissions. File.setExecutable() silently
+ * fails on FUSE/sdcardfs, causing canExecute() to return false.
  *
- *   /sdcard/Android/data/com.ubuntuterm/files/
+ * Layout:
+ *
+ *   /data/data/com.ubuntuterm.debug/files/     ← INTERNAL (executable works)
+ *     └── proot/                                ← PRoot binary + loader
+ *
+ *   /sdcard/Android/data/com.ubuntuterm.debug/files/  ← EXTERNAL (large files)
  *     ├── ubuntu/        ← extracted Ubuntu rootfs (persists across sessions)
- *     ├── proot/         ← PRoot static binary
- *     ├── sessions/      ← per-session state (history, scrollback dumps)
+ *     ├── sessions/      ← per-session state
  *     └── cache/         ← volatile: rootfs tarball, downloads
  *
  * Per project spec (section 11): the filesystem MUST persist between
@@ -21,23 +27,31 @@ import java.io.File
  */
 object FileLocations {
 
-    lateinit var rootDir: File        private set   // .../files/
-    lateinit var ubuntuRootDir: File  private set   // .../files/ubuntu/
-    lateinit var prootDir: File       private set   // .../files/proot/
-    lateinit var sessionsDir: File    private set   // .../files/sessions/
-    lateinit var cacheDir: File       private set   // .../files/cache/
+    lateinit var rootDir: File        private set   // external .../files/
+    lateinit var ubuntuRootDir: File  private set   // external .../files/ubuntu/
+    lateinit var prootDir: File       private set   // INTERNAL .../files/proot/
+    lateinit var sessionsDir: File    private set   // external .../files/sessions/
+    lateinit var cacheDir: File       private set   // external .../files/cache/
 
     fun init(context: Context) {
-        // getExternalFilesDir returns /sdcard/Android/data/<pkg>/files
-        // which on Android 9+ is automatically scoped and not subject to
-        // SAF restrictions.
-        val base = context.getExternalFilesDir(null)
-            ?: context.filesDir // fallback to internal storage
-        rootDir        = base
-        ubuntuRootDir  = File(base, "ubuntu").apply { mkdirs() }
-        prootDir       = File(base, "proot").apply { mkdirs() }
-        sessionsDir    = File(base, "sessions").apply { mkdirs() }
-        cacheDir       = File(base, "cache").apply { mkdirs() }
+        // External storage for large files (rootfs, cache, sessions).
+        // This is /sdcard/Android/data/<pkg>/files — scoped storage on
+        // Android 10+, automatically available without SAF permissions.
+        val external = context.getExternalFilesDir(null)
+            ?: context.filesDir // fallback
+        rootDir        = external
+        ubuntuRootDir  = File(external, "ubuntu").apply { mkdirs() }
+        sessionsDir    = File(external, "sessions").apply { mkdirs() }
+        cacheDir       = File(external, "cache").apply { mkdirs() }
+
+        // v0.1.7: PRoot binary goes in INTERNAL storage where
+        // Unix permissions (including executable bit) actually work.
+        // On Android 10+, external storage is FUSE/sdcardfs which
+        // silently ignores setExecutable().
+        //
+        // context.filesDir = /data/data/<pkg>/files (or /data/user/0/<pkg>/files)
+        // This is a real ext4 filesystem where chmod +x works.
+        prootDir       = File(context.filesDir, "proot").apply { mkdirs() }
     }
 
     /** Where the PRoot static binary lives after first-run extraction. */
@@ -51,9 +65,7 @@ object FileLocations {
 
     /**
      * Returns the path to /home/<user> inside the rootfs.
-     * On Ubuntu the default non-root user created by the bootstrap is
-     * "ubuntu", so this resolves to .../files/ubuntu/home/ubuntu.
      */
-    fun homeDir(user: String = "ubuntu"): File =
+    fun homeDir(user: String = "root"): File =
         File(ubuntuRootDir, "home/$user")
 }

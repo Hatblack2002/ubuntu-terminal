@@ -40,7 +40,26 @@ fun copyStream(
 
 fun ensureExecutable(file: java.io.File): Boolean {
     if (!file.exists()) return false
-    return file.setExecutable(true, true)
+    // v0.1.7: Try File.setExecutable() first (works on internal storage).
+    // If that fails, try android.system.Os.chmod() which calls the
+    // chmod() syscall directly. This is needed because File.setExecutable()
+    // silently fails on some filesystems (e.g., FUSE on older Android).
+    try {
+        if (file.setExecutable(true, true)) {
+            return true
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "setExecutable failed: ${e.message}")
+    }
+    // Fallback: use Os.chmod() directly
+    try {
+        // 0o700 = rwx------ (owner can read, write, execute)
+        android.system.Os.chmod(file.absolutePath, 448)  // 0o700 = 448 decimal
+        return file.canExecute()
+    } catch (e: Exception) {
+        Log.e(TAG, "Os.chmod failed: ${e.message}")
+    }
+    return false
 }
 
 fun ensureDir(dir: java.io.File): Boolean {
