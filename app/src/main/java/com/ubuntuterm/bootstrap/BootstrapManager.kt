@@ -214,9 +214,25 @@ class BootstrapManager(private val context: Context) {
             """.trimIndent() + "\n"
         )
 
-        // 4) /home/ubuntu — create a non-root workspace dir
-        val home = File(rootfs, "home/ubuntu").apply { mkdirs() }
+        // 4) /root — create root's home directory (v0.1.6: was /home/ubuntu).
+        //    With --root-id, UID inside the sandbox is 0 (root), so
+        //    HOME=/root and bash reads /root/.bashrc.
+        val rootHome = File(rootfs, "root").apply { mkdirs() }
         val dollar = "\$"  // Kotlin escape — literal $ for the bash file
+        File(rootHome, ".bashrc").appendText(
+            """
+            |# Added by UbuntuTerminal bootstrap
+            |export PS1='\[\033[01;31m\]root\[\033[00m\]@\[\033[01;32m\]ubuntuterm\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]# '
+            |export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${dollar}HOME/.local/bin"
+            |export LANG=C.UTF-8
+            |export TERM=xterm-256color
+            |export HOME=/root
+            |cd ~ 2>/dev/null || true
+            |""".trimMargin() + "\n"
+        )
+
+        // Also keep /home/ubuntu for backwards compatibility
+        val home = File(rootfs, "home/ubuntu").apply { mkdirs() }
         File(home, ".bashrc").appendText(
             """
             |# Added by UbuntuTerminal bootstrap
@@ -236,6 +252,10 @@ class BootstrapManager(private val context: Context) {
         // 6) Set up /tmp and /var/tmp as world-writable
         File(rootfs, "tmp").apply { mkdirs(); setExecutable(true, false) }
         File(rootfs, "var/tmp").apply { mkdirs(); setExecutable(true, false) }
+
+        // 7) v0.1.6: Create .link2symlink_dirs for PRoot's --link2symlink.
+        //    PROOT_L2S_DIR env var points here. Must be writable.
+        File(rootfs, ".link2symlink_dirs").apply { mkdirs(); setExecutable(true, false) }
     }
 
     private fun ensureUserEntry(user: String, uid: Int, gid: Int) {
