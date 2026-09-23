@@ -14,8 +14,8 @@ android {
         applicationId = "com.ubuntuterm"
         minSdk = 28
         targetSdk = 34
-        versionCode = 11
-        versionName = "0.1.10"
+        versionCode = 12
+        versionName = "0.1.11"
 
         // Only arm64-v8a for the first release (99% of modern devices)
         ndk {

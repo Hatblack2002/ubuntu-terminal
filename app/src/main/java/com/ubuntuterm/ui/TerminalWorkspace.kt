@@ -190,7 +190,10 @@ fun TerminalWorkspace(vm: TerminalViewModel) {
                         )
                     }
                     is UbuntuSession.SessionState.Running -> {
-                        TerminalView(session = session)
+                        // v0.1.11: Simple text output instead of Canvas.
+                        // Canvas was crashing on some devices. Show raw PTY
+                        // output as scrollable text — enough to verify bash works.
+                        SimpleTerminalOutput(session = session)
                     }
                     is UbuntuSession.SessionState.Failed -> {
                         val reason = (state as UbuntuSession.SessionState.Failed).reason
