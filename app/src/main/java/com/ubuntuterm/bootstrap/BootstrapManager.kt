@@ -3,6 +3,7 @@ package com.ubuntuterm.bootstrap
 import android.content.Context
 import android.util.Log
 import com.ubuntuterm.R
+import com.ubuntuterm.diagnostic.DiagnosticLog
 import com.ubuntuterm.util.FileLocations
 import com.ubuntuterm.util.copyStream
 import com.ubuntuterm.util.ensureDir
@@ -85,15 +86,25 @@ class BootstrapManager(private val context: Context) {
     suspend fun ensureReady(onProgress: (Long, Long) -> Unit): Result =
         withContext(Dispatchers.IO) {
             if (FileLocations.isUbuntuReady()) {
+                DiagnosticLog.bootstrap("BootstrapManager",
+                    "rootfs already ready (marker exists), short-circuit")
                 return@withContext Result.AlreadyReady
             }
             try {
                 ensureDir(FileLocations.ubuntuRootDir)
                 ensureDir(FileLocations.cacheDir)
+                DiagnosticLog.bootstrap("BootstrapManager",
+                    "starting download: url=$rootfsUrl")
 
                 val tarball = File(FileLocations.cacheDir, "ubuntu-base-24.04-arm64.tar.gz")
                 downloadTarball(tarball, onProgress)
+                DiagnosticLog.bootstrap("BootstrapManager",
+                    "download complete, size=${tarball.length()}, sha256 verified")
+                DiagnosticLog.bootstrap("BootstrapManager",
+                    "starting extraction to ${FileLocations.ubuntuRootDir.absolutePath}")
                 extractTarball(tarball)
+                DiagnosticLog.bootstrap("BootstrapManager",
+                    "extraction complete, configuring rootfs")
                 configureRootfs()
 
                 // Mark as ready
@@ -103,10 +114,14 @@ class BootstrapManager(private val context: Context) {
                         "url=$rootfsUrl\n" +
                         "timestamp=${System.currentTimeMillis()}\n"
                 )
+                DiagnosticLog.bootstrap("BootstrapManager",
+                    "rootfs ready, marker written")
 
                 Result.Downloaded(tarball.length())
             } catch (t: Throwable) {
                 Log.e(TAG, "Bootstrap failed", t)
+                DiagnosticLog.error("BootstrapManager",
+                    "bootstrap failed: ${t.javaClass.simpleName}: ${t.message}", t)
                 Result.Failed(t.message ?: "unknown error", t)
             }
         }

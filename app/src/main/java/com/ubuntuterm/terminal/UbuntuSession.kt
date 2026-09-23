@@ -2,6 +2,8 @@ package com.ubuntuterm.terminal
 
 import android.util.Log
 import androidx.compose.runtime.Immutable
+import com.ubuntuterm.diagnostic.DiagnosticLog
+import com.ubuntuterm.diagnostic.DiagnosticReport
 import com.ubuntuterm.ubuntu.PRootRunner
 import com.ubuntuterm.util.FileLocations
 import kotlinx.coroutines.CoroutineScope
@@ -40,7 +42,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 class UbuntuSession(
     val id: String,
     val title: String,
-    private val config: PRootRunner.LaunchConfig
+    private val config: PRootRunner.LaunchConfig,
+    // Injectable for tests; defaults to RealNativeTerminalBridge in production.
+    // Per Fase 6: this lets us test UbuntuSession without touching real JNI.
+    private val nativeBridge: NativeTerminalBridge = RealNativeTerminalBridge(),
+    // Injectable scope for tests; defaults to Dispatchers.IO in production.
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
 
     companion object {
@@ -48,7 +55,6 @@ class UbuntuSession(
         private const val READ_BUF = 8 * 1024
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var handle: Long = 0L
     private var readerJob: Job? = null
     private val closed = AtomicBoolean(false)
@@ -69,13 +75,17 @@ class UbuntuSession(
     fun start() {
         if (handle != 0L) {
             Log.w(TAG, "Session $id already started")
+            DiagnosticLog.session("SESSION_START", "session $id already started, skipping")
             return
         }
         if (closed.get()) {
             Log.w(TAG, "Session $id already closed")
+            DiagnosticLog.session("SESSION_START", "session $id already closed, skipping")
             return
         }
         _state.value = SessionState.Starting
+        DiagnosticReport.SessionSnapshot.lastSessionState = "Starting"
+        DiagnosticLog.session("SESSION_START", "start() invoked for session $id")
         Log.i("SESSION_START", "start() invoked for session $id")
 
         // CRITICAL FIX (v0.1.3):
@@ -96,25 +106,38 @@ class UbuntuSession(
         scope.launch {
             try {
                 val cwd = FileLocations.rootDir.absolutePath
+                DiagnosticReport.PRootSnapshot.cwd = cwd
+                DiagnosticLog.session("SESSION_START", "  cwd=$cwd")
                 Log.i("SESSION_START", "  cwd=$cwd")
 
                 val argv: Array<String>
                 val envp: Array<String>
                 withContext(Dispatchers.IO) {
+                    DiagnosticLog.session("SESSION_START", "  building argv/envp on Dispatchers.IO")
                     Log.i("SESSION_START", "  building argv/envp on Dispatchers.IO")
                     // buildArgv() does `require(proot.exists() && proot.canExecute())`
                     // which can throw IllegalArgumentException. We keep it
                     // inside the try/catch so it does not crash the Activity.
                     argv = PRootRunner.buildArgv(config).toTypedArray()
                     envp = PRootRunner.buildEnvp(config).toTypedArray()
+                    // Populate PRoot snapshot for diagnostics
+                    DiagnosticReport.PRootSnapshot.argv = argv.toList()
+                    DiagnosticReport.PRootSnapshot.envp = envp.toList()
+                    DiagnosticReport.PRootSnapshot.binaryPath = argv.firstOrNull() ?: "(unknown)"
+                    DiagnosticReport.PRootSnapshot.rootfsPath = config.rootfs.absolutePath
+                    DiagnosticLog.proot("PRoot_ARGS_READY",
+                        "argv[0]=${argv.firstOrNull()} argv.size=${argv.size} envp.size=${envp.size}")
                     Log.i("PRoot_ARGS_READY",
                         "  argv[0]=${argv.firstOrNull()} argv.size=${argv.size} envp.size=${envp.size}")
                 }
 
+                DiagnosticLog.native("NATIVE_SPAWN_START",
+                    "calling nativeBridge.spawn() on Dispatchers.IO; cols=${config.initialCols} rows=${config.initialRows}")
                 Log.i("NATIVE_SPAWN_START",
-                    "  calling NativeTerminal.nativeSpawn() on Dispatchers.IO")
+                    "  calling nativeBridge.spawn() on Dispatchers.IO")
+                DiagnosticReport.NativeSnapshot.lastSpawnCalled = true
                 val h = withContext(Dispatchers.IO) {
-                    NativeTerminal.nativeSpawn(
+                    nativeBridge.spawn(
                         cwd,
                         argv,
                         envp,
@@ -122,25 +145,47 @@ class UbuntuSession(
                         config.initialRows
                     )
                 }
-                Log.i("NATIVE_SPAWN_RETURN", "  nativeSpawn returned handle=$h")
+                DiagnosticReport.NativeSnapshot.lastSpawnResult = "handle=0x${h.toString(16)}"
+                DiagnosticReport.NativeSnapshot.lastSpawnHandle = h
+                // Handle packs (master_fd << 32) | (pid & 0xFFFFFFFF)
+                val masterFd = (h ushr 32).toInt()
+                val pid = (h and 0xFFFFFFFFL).toInt()
+                DiagnosticReport.NativeSnapshot.lastSpawnMasterFd = masterFd
+                DiagnosticReport.NativeSnapshot.lastSpawnPid = pid
+                DiagnosticLog.native("NATIVE_SPAWN_RETURN",
+                    "nativeBridge.spawn returned handle=0x${h.toString(16)} pid=$pid master_fd=$masterFd")
+                Log.i("NATIVE_SPAWN_RETURN", "  nativeBridge.spawn returned handle=$h")
 
                 if (h == 0L) {
                     // nativeSpawn returns 0 when it threw an IOException from
                     // JNI. We treat that as a failed spawn.
+                    DiagnosticReport.NativeSnapshot.lastSpawnException = "handle=0 (JNI threw)"
                     throw IOException("nativeSpawn returned 0 (JNI threw IOException)")
                 }
 
                 handle = h
+                DiagnosticLog.session("SESSION_RUNNING",
+                    "session $id is Running; handle=0x${h.toString(16)} pid=$pid master_fd=$masterFd")
                 Log.i(TAG, "Spawned pid for session $id (handle=$handle)")
                 _state.value = SessionState.Running
+                DiagnosticReport.SessionSnapshot.lastSessionState = "Running"
 
+                DiagnosticLog.session("PTY_READER_START", "starting reader for session $id")
                 Log.i("PTY_READER_START", "  starting reader for session $id")
                 startReader()
+                DiagnosticLog.session("PTY_REAPER_START", "starting reaper for session $id")
                 Log.i("PTY_REAPER_START", "  starting reaper for session $id")
                 startReaper()
+                DiagnosticLog.session("SESSION_RUNNING",
+                    "session $id is Running; reader+reaper launched")
                 Log.i("SESSION_RUNNING",
                     "  session $id is Running; reader+reaper launched")
             } catch (t: Throwable) {
+                DiagnosticReport.SessionSnapshot.lastSessionState = "Failed: ${t.message}"
+                DiagnosticReport.NativeSnapshot.lastSpawnException =
+                    "${t.javaClass.simpleName}: ${t.message}"
+                DiagnosticLog.error("SESSION_FAILED",
+                    "session $id failed: ${t.javaClass.simpleName}: ${t.message}", t)
                 Log.e(TAG, "Failed to spawn session", t)
                 Log.e("SESSION_FAILED",
                     "  session $id failed: ${t.javaClass.simpleName}: ${t.message}")
@@ -156,11 +201,11 @@ class UbuntuSession(
             while (isActive && !closed.get()) {
                 val n = try {
                     withContext(Dispatchers.IO) {
-                        NativeTerminal.nativeRead(handle, buf, 0, buf.size)
+                        nativeBridge.read(handle, buf, 0, buf.size)
                     }
                 } catch (t: Throwable) {
                     Log.e("PTY_READER",
-                        "  nativeRead threw: ${t.javaClass.simpleName}: ${t.message}")
+                        "  nativeBridge.read threw: ${t.javaClass.simpleName}: ${t.message}")
                     break
                 }
                 when {
@@ -192,10 +237,10 @@ class UbuntuSession(
             Log.i("PTY_REAPER", "  reaper coroutine started for session $id")
             while (isActive && !closed.get()) {
                 val code = try {
-                    NativeTerminal.nativeWaitExit(handle, false)
+                    nativeBridge.waitExit(handle, false)
                 } catch (t: Throwable) {
                     Log.e("PTY_REAPER",
-                        "  nativeWaitExit threw: ${t.javaClass.simpleName}: ${t.message}")
+                        "  nativeBridge.waitExit threw: ${t.javaClass.simpleName}: ${t.message}")
                     -1
                 }
                 if (code != -2) {
@@ -216,7 +261,7 @@ class UbuntuSession(
     fun write(data: ByteArray) {
         if (closed.get() || handle == 0L) return
         try {
-            NativeTerminal.nativeWrite(handle, data, 0, data.size)
+            nativeBridge.write(handle, data, 0, data.size)
         } catch (t: Throwable) {
             Log.e(TAG, "write failed", t)
         }
@@ -241,7 +286,7 @@ class UbuntuSession(
     fun kill(force: Boolean = false) {
         if (handle == 0L) return
         try {
-            NativeTerminal.nativeSendSignal(handle, if (force) 9 else 15)
+            nativeBridge.sendSignal(handle, if (force) 9 else 15)
         } catch (t: Throwable) {
             Log.e(TAG, "kill failed", t)
         }
@@ -251,7 +296,7 @@ class UbuntuSession(
     fun resize(cols: Int, rows: Int) {
         if (handle == 0L) return
         try {
-            NativeTerminal.nativeSetSize(handle, cols, rows)
+            nativeBridge.setSize(handle, cols, rows)
         } catch (t: Throwable) {
             Log.w(TAG, "resize failed: ${t.message}")
         }
@@ -263,7 +308,7 @@ class UbuntuSession(
         Log.i(TAG, "Closing session $id")
         try {
             if (handle != 0L) {
-                NativeTerminal.nativeClose(handle)
+                nativeBridge.close(handle)
                 handle = 0L
             }
         } catch (t: Throwable) {

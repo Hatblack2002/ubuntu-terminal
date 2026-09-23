@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -51,10 +52,16 @@ fun TerminalWorkspace(vm: TerminalViewModel) {
     val activeId by vm.manager.activeSessionId.collectAsState()
     val sessionError by vm.lastSessionError.collectAsState()
     var selectedTab by remember { mutableIntStateOf(0) }
+    var showDiagnostics by remember { mutableStateOf(false) }
 
     // Track session state changes so we can render Starting/Failed/Closed states.
     val activeSessionState = remember(sessions, activeId) {
         sessions.find { it.id == activeId }?.state?.value
+    }
+
+    if (showDiagnostics) {
+        DiagnosticsScreen(onBack = { showDiagnostics = false })
+        return
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -81,8 +88,8 @@ fun TerminalWorkspace(vm: TerminalViewModel) {
                 IconButton(onClick = { vm.openSession() }) {
                     Icon(Icons.Default.Add, contentDescription = "New tab")
                 }
-                IconButton(onClick = { /* Settings */ }) {
-                    Icon(Icons.Default.Settings, contentDescription = "Settings")
+                IconButton(onClick = { showDiagnostics = true }) {
+                    Icon(Icons.Default.Settings, contentDescription = "Settings & Diagnostics")
                 }
             }
         }

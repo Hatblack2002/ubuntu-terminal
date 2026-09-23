@@ -2,6 +2,7 @@ package com.ubuntuterm.bootstrap
 
 import android.content.Context
 import android.util.Log
+import com.ubuntuterm.diagnostic.DiagnosticLog
 import com.ubuntuterm.util.FileLocations
 import com.ubuntuterm.util.ensureExecutable
 import kotlinx.coroutines.Dispatchers
@@ -68,13 +69,17 @@ class PRootManager(private val context: Context) {
      */
     suspend fun ensureReady(): Result = withContext(Dispatchers.IO) {
         val bin = FileLocations.prootBinary
+        DiagnosticLog.proot("PRootManager",
+            "ensureReady: prootBinary path=${bin.absolutePath} exists=${bin.exists()} canExecute=${if (bin.exists()) bin.canExecute() else "(n/a)"} size=${if (bin.exists()) bin.length() else 0}")
         if (bin.exists() && bin.canExecute() && bin.length() > 0) {
+            DiagnosticLog.proot("PRootManager", "PRoot already extracted and executable, short-circuit")
             return@withContext Result.AlreadyReady
         }
 
         try {
             FileLocations.prootDir.mkdirs()
             bin.parentFile?.mkdirs()
+            DiagnosticLog.proot("PRootManager", "Extracting PRoot binary from APK assets to ${bin.absolutePath}")
 
             // Extract proot binary itself.
             copyAsset("proot/proot-arm64", bin)
@@ -101,10 +106,16 @@ class PRootManager(private val context: Context) {
 
             Log.i(TAG, "PRoot extracted to ${bin.absolutePath} (${bin.length()} bytes)")
             Log.i(TAG, "Loader extracted to ${loader.absolutePath} (${loader.length()} bytes)")
+            DiagnosticLog.proot("PRootManager",
+                "PRoot extracted: path=${bin.absolutePath} size=${bin.length()} canExecute=${bin.canExecute()}")
+            DiagnosticLog.proot("PRootManager",
+                "Loader extracted: path=${loader.absolutePath} size=${loader.length()} canExecute=${loader.canExecute()}")
 
             Result.Extracted("v5.1.0-android-aarch64")
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to extract PRoot from assets", t)
+            DiagnosticLog.error("PRootManager",
+                "Failed to extract PRoot: ${t.javaClass.simpleName}: ${t.message}", t)
             // Clean up partial state
             if (bin.exists()) bin.delete()
             Result.Failed(

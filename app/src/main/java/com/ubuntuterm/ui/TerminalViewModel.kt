@@ -4,6 +4,8 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ubuntuterm.diagnostic.DiagnosticLog
+import com.ubuntuterm.diagnostic.DiagnosticReport
 import com.ubuntuterm.terminal.TerminalService
 import com.ubuntuterm.terminal.TerminalManager
 import com.ubuntuterm.terminal.UbuntuSession
@@ -123,32 +125,48 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun openSession(title: String = "ubuntu"): UbuntuSession? {
         android.util.Log.i("PLUS_CLICK", "openSession() invoked, title=$title")
+        DiagnosticLog.ui("PLUS_CLICK", "openSession() invoked, title=$title")
+        DiagnosticLog.session("SESSION_CREATE_START", "calling _manager.openSession(title=$title)")
         _lastSessionError.value = null
 
         // Stage: SESSION_CREATE_START
-        android.util.Log.i("SESSION_CREATE_START", "calling _manager.openSession()")
         val session = try {
             _manager.openSession(title)
         } catch (t: Throwable) {
             android.util.Log.e("SESSION_CREATE_FAILED",
                 "_manager.openSession threw: ${t.javaClass.simpleName}: ${t.message}", t)
+            DiagnosticLog.error("SESSION_CREATE_FAILED",
+                "_manager.openSession threw: ${t.javaClass.simpleName}: ${t.message}", t)
+            DiagnosticReport.SessionSnapshot.sessionRequested = true
+            DiagnosticReport.SessionSnapshot.sessionCreated = false
             _lastSessionError.value =
                 "Session create failed: ${t.javaClass.simpleName}: ${t.message}"
             return null
         }
+        DiagnosticReport.SessionSnapshot.sessionRequested = true
+        DiagnosticReport.SessionSnapshot.sessionCreated = true
+        DiagnosticReport.SessionSnapshot.lastSessionId = session.id
+        DiagnosticReport.SessionSnapshot.lastSessionState = session.state.value.toString()
+        DiagnosticLog.session("SESSION_REGISTERED",
+            "session created id=${session.id} state=${session.state.value}")
         android.util.Log.i("SESSION_REGISTERED",
             "session created id=${session.id} state=${session.state.value}")
 
         // Stage: foreground service — best-effort, NOT fatal
+        DiagnosticLog.service("FG_SERVICE_START", "calling TerminalService.start()")
         android.util.Log.i("FG_SERVICE_START", "calling TerminalService.start()")
+        DiagnosticReport.ServiceSnapshot.startRequested = true
         try {
             TerminalService.start(getApplication())
+            DiagnosticReport.ServiceSnapshot.startResult = "SUCCESS"
+            DiagnosticLog.service("FG_SERVICE_STARTED", "TerminalService started OK")
             android.util.Log.i("FG_SERVICE_STARTED", "TerminalService started OK")
         } catch (t: Throwable) {
-            // ForegroundServiceStartNotAllowedException, SecurityException,
-            // IllegalStateException, etc. We log and continue — the session
-            // can run without the foreground service, it just won't survive
-            // backgrounding.
+            DiagnosticReport.ServiceSnapshot.startResult = "FAILED"
+            DiagnosticReport.ServiceSnapshot.startException =
+                "${t.javaClass.simpleName}: ${t.message}"
+            DiagnosticLog.service("FG_SERVICE_FAILED",
+                "TerminalService.start threw: ${t.javaClass.simpleName}: ${t.message}", t)
             android.util.Log.w("FG_SERVICE_FAILED",
                 "TerminalService.start threw: ${t.javaClass.simpleName}: ${t.message}")
             // Do NOT set lastSessionError here — the session itself is OK.
