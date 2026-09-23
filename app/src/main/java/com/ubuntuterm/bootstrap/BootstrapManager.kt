@@ -85,10 +85,24 @@ class BootstrapManager(private val context: Context) {
      */
     suspend fun ensureReady(onProgress: (Long, Long) -> Unit): Result =
         withContext(Dispatchers.IO) {
+            // v0.1.8: Check if rootfs was extracted with the new symlink-aware
+            // extractor. If the old buggy extractor was used, /bin will be a
+            // regular file instead of a symlink. We detect this and force
+            // re-extraction by deleting the old rootfs.
             if (FileLocations.isUbuntuReady()) {
-                DiagnosticLog.bootstrap("BootstrapManager",
-                    "rootfs already ready (marker exists), short-circuit")
-                return@withContext Result.AlreadyReady
+                val binFile = File(FileLocations.ubuntuRootDir, "bin")
+                if (binFile.exists() && !binFile.isDirectory) {
+                    // /bin is NOT a directory — it's a regular file (buggy extractor).
+                    // Force re-extraction.
+                    DiagnosticLog.bootstrap("BootstrapManager",
+                        "rootfs was extracted with buggy extractor (/bin is regular file, not symlink). Forcing re-extraction.")
+                    FileLocations.ubuntuRootDir.deleteRecursively()
+                    FileLocations.ubuntuRootDir.mkdirs()
+                } else {
+                    DiagnosticLog.bootstrap("BootstrapManager",
+                        "rootfs already ready (marker exists), short-circuit")
+                    return@withContext Result.AlreadyReady
+                }
             }
             try {
                 ensureDir(FileLocations.ubuntuRootDir)
@@ -165,23 +179,81 @@ class BootstrapManager(private val context: Context) {
 
     private fun extractTarball(tarball: File) {
         Log.i(TAG, "Extracting ${tarball.absolutePath} → ${FileLocations.ubuntuRootDir.absolutePath}")
+        DiagnosticLog.bootstrap("BootstrapManager",
+            "Extracting rootfs with symlink/hardlink preservation")
+        var symlinkCount = 0
+        var hardlinkCount = 0
+        var regularCount = 0
+        var dirCount = 0
         TarArchiveInputStream(GZIPInputStream(tarball.inputStream())).use { tis ->
             while (true) {
                 val entry = tis.nextTarEntry ?: break
                 val name = entry.name
                 if (name.contains("..")) continue // path traversal guard
                 val out = File(FileLocations.ubuntuRootDir, name)
-                if (entry.isDirectory) {
-                    ensureDir(out)
-                } else {
-                    out.parentFile?.mkdirs()
-                    FileOutputStream(out).use { fos -> tis.copyTo(fos) }
-                    // Preserve executable bit (mode 0o100 == 0b001_000_000)
-                    val mode = entry.mode
-                    if (mode.toInt() and 0b001_000_000 != 0) ensureExecutable(out)
+
+                when {
+                    entry.isDirectory -> {
+                        ensureDir(out)
+                        dirCount++
+                    }
+                    entry.isSymbolicLink -> {
+                        // v0.1.8: Create real symlinks using Os.symlink()
+                        val target = entry.linkName
+                        out.parentFile?.mkdirs()
+                        // Remove existing file/dir if present
+                        if (out.exists()) out.delete()
+                        try {
+                            android.system.Os.symlink(target, out.absolutePath)
+                            symlinkCount++
+                        } catch (e: Exception) {
+                            DiagnosticLog.error("BootstrapManager",
+                                "symlink failed: $name -> $target: ${e.message}", e)
+                            // Fallback: write as regular file (old behavior)
+                            FileOutputStream(out).use { fos -> fos.write(target.toByteArray()) }
+                        }
+                    }
+                    entry.isLink() -> {
+                        // v0.1.8: Create real hardlinks using Os.link()
+                        val target = File(FileLocations.ubuntuRootDir, entry.linkName)
+                        out.parentFile?.mkdirs()
+                        if (out.exists()) out.delete()
+                        try {
+                            android.system.Os.link(target.absolutePath, out.absolutePath)
+                            hardlinkCount++
+                        } catch (e: Exception) {
+                            DiagnosticLog.error("BootstrapManager",
+                                "hardlink failed: $name -> ${entry.linkName}: ${e.message}", e)
+                            // Fallback: copy the file
+                            if (target.exists()) {
+                                target.copyTo(out, overwrite = true)
+                            }
+                        }
+                    }
+                    else -> {
+                        // Regular file
+                        out.parentFile?.mkdirs()
+                        FileOutputStream(out).use { fos -> tis.copyTo(fos) }
+                        // Preserve executable bit (mode 0o100 == 0b001_000_000)
+                        val mode = entry.mode
+                        if (mode.toInt() and 0b001_000_000 != 0) ensureExecutable(out)
+                        // Also set permissions from tar entry mode
+                        try {
+                            // 0o777 = 511 decimal
+                            val perm = mode.toInt() and 511
+                            if (perm != 0) {
+                                android.system.Os.chmod(out.absolutePath, perm)
+                            }
+                        } catch (e: Exception) {
+                            // Non-fatal — permission already set by ensureExecutable for exec bits
+                        }
+                        regularCount++
+                    }
                 }
             }
         }
+        DiagnosticLog.bootstrap("BootstrapManager",
+            "Extraction complete: $regularCount regular files, $dirCount dirs, $symlinkCount symlinks, $hardlinkCount hardlinks")
     }
 
     private fun configureRootfs() {
