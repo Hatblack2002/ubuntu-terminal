@@ -74,25 +74,52 @@ pid_t spawn_with_pty(const char *cwd,
     if (pid == 0) {
         /* ====================== CHILD PROCESS ====================== */
 
-        /* Become session leader so the PTY can become our controlling tty */
-        setsid();
+        /* 1. Become session leader — MUST be before TIOCSCTTY */
+        if (setsid() < 0) {
+            const char *m = "setsid failed\n";
+            write(2, m, strlen(m));
+            _exit(1);
+        }
 
-        /* v0.1.14: CRITICAL — ioctl(TIOCSCTTY) is REQUIRED.
-         * Without this, the PTY is NOT the controlling terminal.
-         * bash detects "no terminal" → disables readline → reads EOF → exits.
-         * This was the cause of "bash exits in 255ms".
-         *
-         * Order MUST be: setsid() → TIOCSCTTY → dup2.
-         * If TIOCSCTTY is before setsid(), it fails with EPERM.
-         */
-        ioctl(slave_fd, TIOCSCTTY, 0);
+        /* 2. Assign slave as controlling terminal */
+        if (ioctl(slave_fd, TIOCSCTTY, 0) < 0) {
+            /* TIOCSCTTY may fail on some Android versions. Try opening
+             * the slave by name which sometimes forces controlling tty. */
+            int ctl = open(slave_name, O_RDWR);
+            if (ctl >= 0) {
+                ioctl(ctl, TIOCSCTTY, 0);
+                close(ctl);
+            }
+        }
 
-        /* Dup slave → stdin/stdout/stderr */
+        /* 3-5. Redirect stdio to slave PTY */
         dup2(slave_fd, STDIN_FILENO);
         dup2(slave_fd, STDOUT_FILENO);
         dup2(slave_fd, STDERR_FILENO);
         if (slave_fd > STDERR_FILENO) close(slave_fd);
         if (master_fd > STDERR_FILENO) close(master_fd);
+
+        /* 6. Set terminal to raw mode */
+        struct termios t;
+        if (tcgetattr(0, &t) == 0) {
+            cfmakeraw(&t);
+            tcsetattr(0, TCSANOW, &t);
+        }
+
+        /* 7. Close all other inherited fds (best-effort) */
+        int max_fd = (int) sysconf(_SC_OPEN_MAX);
+        if (max_fd < 256) max_fd = 256;
+        for (int fd = STDERR_FILENO + 1; fd < max_fd; fd++) {
+            close(fd);
+        }
+
+        /* 8. Reset signal handlers */
+        signal(SIGPIPE, SIG_DFL);
+        signal(SIGCHLD, SIG_DFL);
+
+        /* 9. DEBUG PROBE — confirm slave is connected to stdout */
+        const char *probe = "PTY_SLAVE_OK\n";
+        write(1, probe, 13);
 
         /* cd into the requested working directory */
         if (cwd && *cwd) {
@@ -101,18 +128,7 @@ pid_t spawn_with_pty(const char *cwd,
             }
         }
 
-        /* Close all other inherited fds (best-effort) */
-        int max_fd = (int) sysconf(_SC_OPEN_MAX);
-        if (max_fd < 256) max_fd = 256;
-        for (int fd = STDERR_FILENO + 1; fd < max_fd; fd++) {
-            close(fd);
-        }
-
-        /* Reset signal handlers */
-        signal(SIGPIPE, SIG_DFL);
-        signal(SIGCHLD, SIG_DFL);
-
-        /* Execute the requested binary (proot → /bin/bash inside Ubuntu) */
+        /* 10. Execute the requested binary */
         execve(argv[0], argv, envp);
 
         /* If we reach here, execve failed. */
