@@ -59,6 +59,13 @@ class UbuntuSession(
     private var readerJob: Job? = null
     private val closed = AtomicBoolean(false)
 
+    // v0.1.15: Ring buffer of last 4KB of PTY output for diagnostics.
+    // This lets the diagnostic report show what bash wrote before dying.
+    private val ptyTail = java.util.ArrayDeque<ByteArray>()
+    private val ptyTailMax = 4096
+    private var ptyTotalBytes = 0L
+    private val ptyLock = Any()
+
     /** Raw bytes emitted by the PTY (terminal escape sequences included). */
     private val _output = MutableSharedFlow<ByteArray>(
         replay = 8,
@@ -71,6 +78,15 @@ class UbuntuSession(
 
     private val _exitCode = MutableStateFlow<Int?>(null)
     val exitCode: StateFlow<Int?> = _exitCode.asStateFlow()
+
+    /** v0.1.15: Returns the last 4KB of PTY output (for diagnostic report). */
+    fun ptyOutputSnapshot(): String = synchronized(ptyLock) {
+        if (ptyTail.isEmpty()) "(no PTY output received)" else
+            ptyTail.joinToString("") { String(it, Charsets.UTF_8) }
+    }
+
+    /** v0.1.15: Total bytes read from PTY. */
+    fun ptyBytesRead(): Long = synchronized(ptyLock) { ptyTotalBytes }
 
     fun start() {
         if (handle != 0L) {
@@ -212,23 +228,37 @@ class UbuntuSession(
                     n > 0 -> {
                         val copy = buf.copyOfRange(0, n)
                         _output.emit(copy)
+                        // v0.1.15: accumulate in ring buffer for diagnostics
+                        synchronized(ptyLock) {
+                            ptyTail.addLast(copy)
+                            ptyTotalBytes += n
+                            var total = ptyTail.sumOf { it.size }
+                            while (total > ptyTailMax && ptyTail.isNotEmpty()) {
+                                total -= ptyTail.removeFirst().size
+                            }
+                        }
+                        // Log first 200 bytes for logcat visibility
+                        val preview = String(copy, Charsets.UTF_8)
+                            .replace(Regex("\u001B\\[[0-9;]*[a-zA-Z]"), "")
+                            .replace(Regex("\u001B\\][^\u0007]*\u0007"), "")
+                            .replace("\r", "").replace("\n", "\\n")
+                            .take(200)
+                        Log.d("PTY_READER", "read $n bytes: $preview")
                     }
                     n == -2 -> {
                         Log.i("PTY_READER", "  session $id: EOF from PTY (n=-2)")
                         break
                     }
                     n == 0 -> {
-                        // No data — short sleep to avoid spin
                         kotlinx.coroutines.delay(10)
                     }
                     else -> {
-                        // Error
                         Log.e("PTY_READER", "  session $id: read returned $n (errno)")
                         kotlinx.coroutines.delay(50)
                     }
                 }
             }
-            Log.i("PTY_READER", "  reader coroutine exited for session $id")
+            Log.i("PTY_READER", "  reader coroutine exited for session $id, totalBytes=$ptyTotalBytes")
         }
     }
 

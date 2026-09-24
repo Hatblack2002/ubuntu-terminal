@@ -117,9 +117,8 @@ object PRootRunner {
     fun buildEnvp(config: LaunchConfig): List<String> {
         val env = LinkedHashMap<String, String>()
 
-        // PATH inside Ubuntu
+        // Standard Linux environment
         env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        // v0.1.6: HOME=/root because --root-id makes us UID 0 inside.
         env["HOME"] = "/root"
         env["USER"] = config.username
         env["LOGNAME"] = config.username
@@ -128,18 +127,23 @@ object PRootRunner {
         env["LC_ALL"] = "C.UTF-8"
         env["SHELL"] = "/bin/bash"
         env["HOSTNAME"] = config.hostname
+        env["PWD"] = "/root"
+        env["TMPDIR"] = "/tmp"
 
-        // PROOT_NO_SECCOMP: avoid seccomp issues on some kernels.
+        // PRoot-specific environment
         env["PROOT_NO_SECCOMP"] = "1"
 
-        // v0.1.6: PROOT_TMP_DIR — PRoot needs a writable temp directory.
-        // We point it to the rootfs's /tmp which is writable because
-        // --root-id makes us UID 0.
-        env["PROOT_TMP_DIR"] = "/tmp"
+        // v0.1.15: PROOT_TMP_DIR must point to a real writable directory
+        // on the HOST filesystem (not inside the rootfs). PRoot needs this
+        // BEFORE it enters the rootfs. Using the app's internal cache dir.
+        val prootTmp = java.io.File(FileLocations.prootDir, "tmp").apply { mkdirs() }
+        env["PROOT_TMP_DIR"] = prootTmp.absolutePath
 
-        // v0.1.6: PROOT_L2S_DIR — required by --link2symlink.
-        // This directory stores link2symlink metadata inside the rootfs.
-        // We create it during bootstrap in configureRootfs().
+        // v0.1.15: PROOT_LOADER — explicitly tell PRoot where its loader is.
+        // Without this, PRoot may not find the loader on some devices.
+        val loader = java.io.File(FileLocations.prootDir, "libexec/proot/loader")
+        env["PROOT_LOADER"] = loader.absolutePath
+
         env["PROOT_L2S_DIR"] = "${config.rootfs.absolutePath}/.link2symlink_dirs"
 
         return env.entries.map { "${it.key}=${it.value}" }

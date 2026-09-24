@@ -165,6 +165,9 @@ class TerminalViewModel(app: Application) : AndroidViewModel(app) {
             DiagnosticReport.SessionSnapshot.sessionCreated = true
             DiagnosticReport.SessionSnapshot.lastSessionId = session.id
             DiagnosticReport.SessionSnapshot.lastSessionState = session.state.value.toString()
+            // v0.1.15: capture PTY output for diagnostics
+            DiagnosticReport.SessionSnapshot.lastPtyOutput = session.ptyOutputSnapshot()
+            DiagnosticReport.SessionSnapshot.lastPtyBytes = session.ptyBytesRead()
             DiagnosticLog.session("SESSION_REGISTERED",
                 "session created id=${session.id} state=${session.state.value}")
 

@@ -57,6 +57,8 @@ object DiagnosticReport {
         @Volatile var sessionCreated: Boolean = false
         @Volatile var lastSessionId: String? = null
         @Volatile var lastSessionState: String = "(none)"
+        @Volatile var lastPtyOutput: String = ""
+        @Volatile var lastPtyBytes: Long = 0
     }
 
     /**
@@ -221,6 +223,33 @@ object DiagnosticReport {
         sb.append("  start result:      ${ServiceSnapshot.startResult}\n")
         if (ServiceSnapshot.startException != null) {
             sb.append("  start exception:   ${ServiceSnapshot.startException}\n")
+        }
+        sb.append("\n")
+
+        // === PTY OUTPUT (v0.1.15) ===
+        sb.append("PTY OUTPUT (last 4KB)\n")
+        try {
+            // Find the last session from TerminalManager
+            val manager = com.ubuntuterm.terminal.TerminalManager()
+            // Can't access TerminalManager sessions directly from here.
+            // Instead, we store the last PTY output in SessionSnapshot.
+            val ptyOutput = SessionSnapshot.lastPtyOutput
+            val ptyBytes = SessionSnapshot.lastPtyBytes
+            sb.append("  bytes received:    $ptyBytes\n")
+            sb.append("  content:\n")
+            if (ptyOutput.isBlank()) {
+                sb.append("    (no PTY output received — bash may have exited before writing)\n")
+            } else {
+                // Show raw with visible newlines
+                ptyOutput.lines().take(50).forEach { line ->
+                    sb.append("    $line\n")
+                }
+                if (ptyOutput.lines().size > 50) {
+                    sb.append("    ... (${ptyOutput.lines().size - 50} more lines)\n")
+                }
+            }
+        } catch (t: Throwable) {
+            sb.append("  (error reading PTY output: ${t.message})\n")
         }
         sb.append("\n")
 
