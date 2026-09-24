@@ -1,20 +1,22 @@
 /*
  * process_utils.c
  * --------------------------------------------------------------------
- * Helpers for spawning the PRoot + Ubuntu child process attached to
- * a PTY slave, plus signal/exit handling.
+ * v0.1.16: REWRITTEN to use forkpty() — the same function that
+ * Termux, tmux, and every Unix terminal emulator uses.
  *
- * Per project spec (section 7): NO HTTP, NO REST. The communication
- * between the Android UI and the Ubuntu process uses native IPC
- * primitives only: PTY, pipes, and process signals.
+ * forkpty() does ALL of this in one call:
+ *   - posix_openpt + grantpt + unlockpt + ptsname + open(slave)
+ *   - fork()
+ *   - child: setsid(), TIOCSCTTY, dup2(slave, 0/1/2), close(slave), close(master)
+ *   - parent: close(slave), return master_fd + pid
  *
- * Per separation principle: NO Termux. The child process is spawned
- * with the standard POSIX primitives fork()/execve(); no Termux
- * component is used at any layer.
+ * No manual setsid/dup2/TIOCSCTTY needed. This eliminates the entire
+ * class of bugs where a step was missing or out of order.
+ *
+ * Per project spec (section 7): NO HTTP, NO REST. PTY + fork + execve only.
  */
 
 #include "process_utils.h"
-#include "pty_compat.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,10 +25,11 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <errno.h>
-#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <termios.h>
+#include <pty.h>
 #include <android/log.h>
 
 #define TAG "process_utils"
@@ -37,14 +40,11 @@
 /* spawn_with_pty                                                     */
 /* ----------------------------------------------------------------- */
 /*
- * Spawns a child process whose stdin/stdout/stderr are attached to
- * the slave end of a PTY. The child runs argv[0] with environment envp.
+ * Spawns a child process attached to a PTY using forkpty().
  *
  * Returns:
  *   child PID (>0) on success, sets *master_fd_out to the master fd
  *   -1 on error (errno preserved)
- *
- * The caller MUST close *master_fd_out when finished.
  */
 pid_t spawn_with_pty(const char *cwd,
                      char *const argv[],
@@ -52,72 +52,53 @@ pid_t spawn_with_pty(const char *cwd,
                      int cols, int rows,
                      int *master_fd_out)
 {
-    int master_fd = -1, slave_fd = -1;
-    char slave_name[64] = {0};
+    int master_fd = -1;
+    struct winsize ws = {0};
+    ws.ws_row = (unsigned short)(rows > 0 ? rows : 24);
+    ws.ws_col = (unsigned short)(cols > 0 ? cols : 80);
+    ws.ws_xpixel = ws.ws_col * 8;
+    ws.ws_ypixel = ws.ws_row * 16;
 
-    if (pty_compat_openpty(&master_fd, &slave_fd,
-                           slave_name, sizeof(slave_name),
-                           cols, rows) != 0) {
-        LOGE("openpty failed: %s", strerror(errno));
-        return -1;
-    }
+    /*
+     * forkpty() does EVERYTHING:
+     *   - Creates PTY pair (master + slave)
+     *   - fork()
+     *   - In child: setsid(), TIOCSCTTY, dup2(slave, 0/1/2), close(slave), close(master)
+     *   - In parent: close(slave), sets master_fd
+     *
+     * Returns: pid in parent, 0 in child, -1 on error.
+     */
+    pid_t pid = forkpty(&master_fd, NULL, NULL, &ws);
 
-    /* Use vfork-style fork — we only call execve in the child. */
-    pid_t pid = fork();
     if (pid < 0) {
-        LOGE("fork failed: %s", strerror(errno));
-        pty_compat_close(slave_fd);
-        pty_compat_close(master_fd);
+        LOGE("forkpty failed: %s", strerror(errno));
         return -1;
     }
 
     if (pid == 0) {
         /* ====================== CHILD PROCESS ====================== */
+        /* forkpty already did: setsid, TIOCSCTTY, dup2(slave, 0/1/2),
+         * close(slave), close(master). We only need to exec. */
 
-        /* 1. Become session leader — MUST be before TIOCSCTTY */
-        if (setsid() < 0) {
-            const char *m = "setsid failed\n";
-            write(2, m, strlen(m));
-            _exit(1);
-        }
-
-        /* 2. Assign slave as controlling terminal */
-        if (ioctl(slave_fd, TIOCSCTTY, 0) < 0) {
-            /* TIOCSCTTY may fail on some Android versions. Try opening
-             * the slave by name which sometimes forces controlling tty. */
-            int ctl = open(slave_name, O_RDWR);
-            if (ctl >= 0) {
-                ioctl(ctl, TIOCSCTTY, 0);
-                close(ctl);
-            }
-        }
-
-        /* 3-5. Redirect stdio to slave PTY */
-        dup2(slave_fd, STDIN_FILENO);
-        dup2(slave_fd, STDOUT_FILENO);
-        dup2(slave_fd, STDERR_FILENO);
-        if (slave_fd > STDERR_FILENO) close(slave_fd);
-        if (master_fd > STDERR_FILENO) close(master_fd);
-
-        /* 6. Set terminal to raw mode */
+        /* Set terminal to raw mode */
         struct termios t;
         if (tcgetattr(0, &t) == 0) {
             cfmakeraw(&t);
             tcsetattr(0, TCSANOW, &t);
         }
 
-        /* 7. Close all other inherited fds (best-effort) */
+        /* Close all other inherited fds (best-effort) */
         int max_fd = (int) sysconf(_SC_OPEN_MAX);
         if (max_fd < 256) max_fd = 256;
         for (int fd = STDERR_FILENO + 1; fd < max_fd; fd++) {
             close(fd);
         }
 
-        /* 8. Reset signal handlers */
+        /* Reset signal handlers */
         signal(SIGPIPE, SIG_DFL);
         signal(SIGCHLD, SIG_DFL);
 
-        /* 9. DEBUG PROBE — confirm slave is connected to stdout */
+        /* DEBUG PROBE — confirm slave is connected to stdout */
         const char *probe = "PTY_SLAVE_OK\n";
         write(1, probe, 13);
 
@@ -128,7 +109,7 @@ pid_t spawn_with_pty(const char *cwd,
             }
         }
 
-        /* 10. Execute the requested binary */
+        /* Execute the requested binary (proot → /bin/bash inside Ubuntu) */
         execve(argv[0], argv, envp);
 
         /* If we reach here, execve failed. */
@@ -141,11 +122,10 @@ pid_t spawn_with_pty(const char *cwd,
     }
 
     /* ====================== PARENT PROCESS ====================== */
-    close(slave_fd);
+    /* forkpty already closed the slave fd in the parent. */
 
     *master_fd_out = master_fd;
-    LOGI("Spawned child pid=%d master_fd=%d slave=%s",
-         (int) pid, master_fd, slave_name);
+    LOGI("forkpty OK: pid=%d master_fd=%d", (int) pid, master_fd);
     return pid;
 }
 
@@ -164,12 +144,6 @@ int send_signal(pid_t pid, int signo) {
 /* ----------------------------------------------------------------- */
 /* wait_for_exit                                                      */
 /* ----------------------------------------------------------------- */
-/*
- * Blocks until the child exits. Returns the exit status (0-255) or
- * -1 if killed by a signal (caller can inspect errno).
- *
- * Use WNOHANG externally for non-blocking polls — see wait_nohang().
- */
 int wait_for_exit(pid_t pid) {
     int status = 0;
     if (waitpid(pid, &status, 0) < 0) {
@@ -183,14 +157,6 @@ int wait_for_exit(pid_t pid) {
 /* ----------------------------------------------------------------- */
 /* wait_nohang                                                        */
 /* ----------------------------------------------------------------- */
-/*
- * Non-blocking wait.
- * Returns:
- *   0..255 if the child has exited normally
- *   128+sig if the child was killed by a signal
- *   -1 with errno==ECHILD if the child is gone (already reaped)
- *   -2 (special) if the child is still running
- */
 int wait_nohang(pid_t pid) {
     int status = 0;
     pid_t r = waitpid(pid, &status, WNOHANG);
@@ -204,19 +170,11 @@ int wait_nohang(pid_t pid) {
 /* ----------------------------------------------------------------- */
 /* build_environment                                                  */
 /* ----------------------------------------------------------------- */
-/*
- * Builds a minimal environment for the child process. The PRoot
- * invocation will rewrite this inside the Ubuntu rootfs.
- *
- * Caller is responsible for freeing the returned array and each
- * string inside it. Use free_environment() for that.
- */
 char **build_environment(const char *path_extra,
                          const char *home,
                          const char *user,
                          const char *term,
                          const char *lang) {
-    /* 7 base vars + path_extra + NULL terminator */
     size_t count = 8;
     char **env = (char **) calloc(count, sizeof(char *));
     if (!env) return NULL;
