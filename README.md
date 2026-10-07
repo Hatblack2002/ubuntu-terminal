@@ -26,6 +26,21 @@ Ubuntu real desde Android.
 
 ---
 
+## Estado actual (v0.1.15 - versionCode 16)
+
+**Versión actual:** 0.1.15 (versionCode 16) — **no** es v0.2.0.
+
+El APK en `download/` es `ubuntu-terminal-0.1.15-debug-16-release.apk`.
+Se obtuvo de `scripts/fetch-proot.sh` y del workflow de compilación de GitHub
+Actions.
+
+**Commit más reciente con código fuente completo:** `b96af73` ("revert(v0.2.0): restaurar el árbol fuente completo desde v0.1.16").
+
+**Versión planada (v0.2.0):** una reescritura del motor Termux (aproximadamente
+una terminal-emulator) que ampliará la interfaz actual. No se ha implementado.
+
+---
+
 ## Requisitos de compilación
 
 - Android Studio Koala 2024.1.1 o superior (o Gradle 8.9 + AGP 8.5.2)
@@ -33,6 +48,33 @@ Ubuntu real desde Android.
 - Android SDK Platform 34
 - Android NDK 26.3.11579264 (o compatible)
 - CMake 3.22.1 (incluido con el NDK)
+
+**Cómo compilar:**
+
+1. Agrega un webhook de GitHub Actions (`.github/workflows/build.yml`) y ejecútalo localmente usando `gh workflow run build.yml` (si tienes `gh` instalado) o manualmente usando `git checkout -t temp && git switch -c build-branch`.
+
+2. O ejecuta manualmente (recomendado solo si tienes Android SDK/NDK):
+
+```bash
+# Descargar el binario estático de PRoot (opcional, sino la app lo obtiene en el dispositivo)
+./scripts/fetch-proot.sh
+# Construir usando el wrapper de Gradle (requiere Android SDK/NDK instalado)
+./gradlew clean assembleRelease
+```
+
+Para entornos CI, el workflow se encargará de descargar Android SDK/NDK,
+PRoot y ejecutar Gradle automáticamente.
+
+---
+
+## Requisitos de ejecución (en el dispositivo)
+
+- Android 9 (API 28) o superior
+- arm64-v8a (~99 % de los dispositivos modernos)
+- ~200 MB libres (rootfs + PRoot)
+- Conexión a Internet en la **primera** ejecución (descarga del rootfs)
+
+---
 
 ## Requisitos de ejecución (en el dispositivo)
 

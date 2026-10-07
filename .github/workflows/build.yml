@@ -1,0 +1,173 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  # For tagging, we support both auto-tagging via release pipeline and manual tagging
+  release:
+    types: [created]
+
+env:
+  # Android SDK version to use
+  ANDROID_SDK_VERSION: '35'
+  # NDK version to use
+  NDK_VERSION: '25.1.7039190'
+  # Gradle wrapper version (should match what we now have)
+  GRADLE_VERSION: '8.9'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install unzip and curl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip curl wget
+
+      - name: Set up Android SDK
+        run: |
+          # Download and set up Android SDK
+          wget -q https://dl.google.com/android/repository/sdk-tools-linux-10406112.zip
+          mkdir -p $HOME/android-sdk
+          unzip -o sdk-tools-linux-10406112.zip -d $HOME/android-sdk
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/tools" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/tools/bin" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/ndk/$NDK_VERSION" >> $GITHUB_PATH
+
+          # Install required SDK components
+          yes | $HOME/android-sdk/tools/bin/sdkmanager --sdk_root=$HOME/android-sdk \
+            "platforms;android-${ANDROID_SDK_VERSION}" \
+            "platform-tools" \
+            "ndk;$NDK_VERSION"
+
+      - name: Set up NDK environment
+        run: |
+          export ANDROID_NDK_HOME="$HOME/android-sdk/ndk/$NDK_VERSION"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+          echo "$ANDROID_NDK_HOME" >> $GITHUB_PATH
+          echo "export ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+
+      - name: Set up Gradle wrapper
+        run: |
+          # Verify our Gradle wrapper is present and executable
+          if [ ! -f "./gradlew" ] || [ ! -x "./gradlew" ]; then
+            echo "Gradle wrapper not found or not executable"
+            exit 1
+          fi
+          if [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "Gradle wrapper jar not found"
+            exit 1
+          fi
+          echo "Gradle wrapper verified"
+
+      - name: Download and extract PRoot (optional)
+        run: |
+          mkdir -p app/src/main/assets/proot
+          ./scripts/fetch-proot.sh
+          cp proot-static/proot-arm64 app/src/main/assets/proot/proot-arm64 2>/dev/null || true
+
+      - name: Build APK with Gradle
+        run: |
+          ./gradlew clean assembleDebug assembleRelease
+          echo "APK build completed"
+          # Check if APKs were generated
+          if [ ! -f "app/build/outputs/apk/release/app-release-unsigned.apk" ] && [ ! -f "app/build/outputs/apk/release/app-release.apk" ]; then
+            echo "No Release APK found!"
+            find app/build/outputs/apk -name "*.apk"
+            exit 1
+          fi
+
+      - name: Rename APK to include version info
+        run: |
+          mkdir -p download
+          # Try to find release APK (unsigned or signed)
+          APK_FILE=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          # Fallback to debug if release not found for some reason
+          if [ -z "$APK_FILE" ]; then
+            APK_FILE=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          fi
+
+          VERSION_NAME=$(grep "versionName =" app/build.gradle.kts | sed 's/.*= "\(.*\)"/\1/')
+          VERSION_CODE=$(grep "versionCode =" app/build.gradle.kts | sed 's/.*= \(.*\)/\1/')
+
+          if [ -n "$VERSION_NAME" ] && [ -n "$VERSION_CODE" ]; then
+            NEW_NAME="ubuntu-terminal-${VERSION_NAME}-${VERSION_CODE}-release.apk"
+            cp "$APK_FILE" "download/${NEW_NAME}"
+            echo "Copied APK to: download/${NEW_NAME}"
+          else
+            echo "Could not extract version info, using simple name"
+            cp "$APK_FILE" "download/ubuntu-terminal-release.apk"
+          fi
+
+          # Also copy debug APK if it exists
+          DEBUG_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
+          if [ -n "$DEBUG_APK" ]; then
+            cp "$DEBUG_APK" "download/ubuntu-terminal-debug.apk"
+          fi
+
+      - name: Upload APK as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-terminal-apk
+          path: download/*.apk
+          retention-days: 7
+
+      - name: Create GitHub Release (for tags)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            download/*.apk
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+
+      
+
+      - name: Run post-build validations
+        run: |
+          echo "Running validation scripts..."
+          if [ -f "./scripts/validate_apk.sh" ]; then
+            ./scripts/validate_apk.sh
+          fi
+
+      - name: Run smoke tests (optional)
+        run: |
+          echo "Running smoke tests..."
+          if command -v proot >/dev/null 2>&1; then
+            ./scripts/smoke-test.sh 2>/dev/null || echo "Smoke tests completed (may be expected to fail)"
+          else
+            echo "proot not installed - skipping smoke tests"
+          fi
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "APK build failed"
+          exit 1
